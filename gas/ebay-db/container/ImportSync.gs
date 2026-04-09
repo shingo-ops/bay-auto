@@ -484,3 +484,49 @@ function setupAll() {
   setupSyncLogSheet();
   Logger.log('セットアップ完了。GASエディタ > プロジェクトの設定 > スクリプトプロパティ で各値を入力してください。');
 }
+
+/**
+ * 手動実行用: 全シートにヘッダー行だけを作成する
+ * シートが存在しない場合は新規作成する
+ * データ行には触れない（ヘッダー行のみ上書き）
+ */
+function setupHeaders() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  var CATEGORY_HEADERS = [
+    'marketplace_id', 'category_tree_id', 'category_id', 'category_name',
+    'required_specs_json', 'recommended_specs_json', 'optional_specs_json',
+    'aspect_values_json', 'aspect_modes_json', 'multi_value_aspects_json',
+    'conditions_json', 'fvf_rate', 'last_synced'
+  ];
+
+  var CONDITION_HEADERS = [
+    'condition_id', 'condition_name', 'condition_enum',
+    'ja_display', 'ja_description', 'last_synced'
+  ];
+
+  // category_master_EBAY_XX（4シート）
+  CATEGORY_MARKETPLACES.forEach(function(mp) {
+    var name = 'category_master_' + mp;
+    var sheet = ss.getSheetByName(name) || ss.insertSheet(name);
+    sheet.getRange(1, 1, 1, CATEGORY_HEADERS.length).setValues([CATEGORY_HEADERS]);
+    var headerRange = sheet.getRange(1, 1, 1, CATEGORY_HEADERS.length);
+    headerRange.setBackground('#4285f4');
+    headerRange.setFontColor('#ffffff');
+    headerRange.setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    Logger.log(name + ': ヘッダー設定完了 (' + CATEGORY_HEADERS.length + '列)');
+  });
+
+  // condition_ja_map
+  var conSheet = ss.getSheetByName('condition_ja_map') || ss.insertSheet('condition_ja_map');
+  conSheet.getRange(1, 1, 1, CONDITION_HEADERS.length).setValues([CONDITION_HEADERS]);
+  var conHeaderRange = conSheet.getRange(1, 1, 1, CONDITION_HEADERS.length);
+  conHeaderRange.setBackground('#4285f4');
+  conHeaderRange.setFontColor('#ffffff');
+  conHeaderRange.setFontWeight('bold');
+  conSheet.setFrozenRows(1);
+  Logger.log('condition_ja_map: ヘッダー設定完了 (' + CONDITION_HEADERS.length + '列)');
+
+  Logger.log('=== setupHeaders 完了: 5シート ===');
+}
