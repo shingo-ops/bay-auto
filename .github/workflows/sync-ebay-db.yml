@@ -9,6 +9,8 @@ jobs:
   sync-ebay-db:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: write
 
     env:
       OUTPUT_DIR: ${{ github.workspace }}/ebay-db/output
