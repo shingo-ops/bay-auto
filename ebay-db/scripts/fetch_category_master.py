@@ -49,6 +49,7 @@ def fetch_aspects_for_marketplace(token: str, category_tree_id: str) -> list[dic
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
+        "Accept-Encoding": "gzip",   # 明示指定 → requests は自動展開しない（手動展開）
     }
 
     for attempt in range(MAX_RETRIES):
@@ -66,13 +67,16 @@ def fetch_aspects_for_marketplace(token: str, category_tree_id: str) -> list[dic
         if not raw:
             raise ValueError(f"レスポンスが空です (tree_id={category_tree_id})")
 
-        # gzip 圧縮の有無を try/except で判定（Content-Encoding ヘッダー不依存）
+        # Accept-Encoding: gzip を明示した場合 requests は自動展開しないため手動展開
         try:
-            data = json.loads(gzip.decompress(raw))
+            content = gzip.decompress(raw)
         except Exception:
-            data = json.loads(raw)
+            content = raw
 
-        return data.get("categoryAspects", [])
+        data = json.loads(content)
+        # application/json レスポンス → aspectMetadataResponses キー
+        # application/octet-stream レスポンス → categoryAspects キー（フォールバック）
+        return data.get("aspectMetadataResponses") or data.get("categoryAspects", [])
 
     raise RuntimeError(f"最大リトライ回数 ({MAX_RETRIES}) に達しました: tree_id={category_tree_id}")
 
@@ -81,9 +85,11 @@ def build_category_rows(aspects: list[dict], marketplace_id: str, category_tree_
     """APIレスポンスを category_master 行形式に変換"""
     rows = []
     for item in aspects:
+        # application/json 形式: categoryId/categoryName がトップレベル
+        # application/octet-stream 形式: category.categoryId/category.categoryName
         category = item.get("category", {})
-        cat_id = category.get("categoryId", "")
-        cat_name = category.get("categoryName", "")
+        cat_id = category.get("categoryId") or item.get("categoryId", "")
+        cat_name = category.get("categoryName") or item.get("categoryName", "")
         aspect_list = item.get("aspects", [])
 
         required, recommended, optional = [], [], []
