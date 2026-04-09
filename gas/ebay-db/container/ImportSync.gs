@@ -86,8 +86,8 @@ function importAndSync() {
  * @returns {Object} diffResult
  */
 function importCsvAndDetectDiff(ss, config) {
-  var folderId = config['CSV_FOLDER_ID'];
-  if (!folderId) throw new Error('CSV_FOLDER_ID が config に設定されていません');
+  var folderId = config['DRIVE_CSV_FOLDER_ID'];
+  if (!folderId) throw new Error('DRIVE_CSV_FOLDER_ID が config に設定されていません');
 
   var folder = DriveApp.getFolderById(folderId);
   var diffResult = { categoryAdded: 0, categoryRemoved: 0, categoryChanged: 0, conditionAdded: 0, conditionRemoved: 0 };
@@ -433,5 +433,5 @@ function updateConfig(ss, key, value) {
 function setupAll() {
   setupConfigSheet();
   setupSyncLogSheet();
-  Logger.log('セットアップ完了。configシートにSERVICE_BOOK_IDとCSV_FOLDER_IDを入力してください。');
+  Logger.log('セットアップ完了。configシートにSERVICE_BOOK_IDとDRIVE_CSV_FOLDER_IDを入力してください。');
 }

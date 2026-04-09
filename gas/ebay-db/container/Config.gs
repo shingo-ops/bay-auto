@@ -40,7 +40,7 @@ function setupConfigSheet() {
 
   var rows = [
     ['SERVICE_BOOK_ID',     '',      'サービス提供用ブックのスプレッドシートID'],
-    ['CSV_FOLDER_ID',       '',      'Python出力CSVの格納先Google DriveフォルダID'],
+    ['DRIVE_CSV_FOLDER_ID', '',      'Python出力CSVの格納先Google DriveフォルダID'],
     ['DISCORD_WEBHOOK',     '',      'Discord通知用Webhook URL'],
     ['AUTO_SYNC_ENABLED',   'TRUE',  '自動転記の有効化（TRUE/FALSE）'],
     ['LAST_FULL_SYNC',      '',      '最終フル同期日時（自動更新）']
