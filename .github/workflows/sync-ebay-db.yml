@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: '0 3 1 * *'   # 毎月1日 03:00 UTC（日本時間 12:00）
   workflow_dispatch:        # 手動実行
+    inputs:
+      import_only:
+        description: 'true にすると API 取得・CSV 生成をスキップして clasp push + clasp run のみ実行'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   sync-ebay-db:
@@ -21,43 +30,51 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Create output directory
+        if: inputs.import_only != 'true'
         run: mkdir -p ${{ env.OUTPUT_DIR }}
 
       # ─── Python セットアップ ───────────────────────────────
       - name: Setup Python
+        if: inputs.import_only != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install dependencies
+        if: inputs.import_only != 'true'
         run: pip install -r ebay-db/scripts/requirements.txt
 
       # ─── Step1: eBay カテゴリスペック取得（マーケット別）──
       - name: Step1a - Fetch EBAY_US
+        if: inputs.import_only != 'true'
         env:
           EBAY_CLIENT_ID:     ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
         run: python -u ebay-db/scripts/fetch_category_master.py fetch EBAY_US
 
       - name: Step1b - Fetch EBAY_GB
+        if: inputs.import_only != 'true'
         env:
           EBAY_CLIENT_ID:     ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
         run: python -u ebay-db/scripts/fetch_category_master.py fetch EBAY_GB
 
       - name: Step1c - Fetch EBAY_DE
+        if: inputs.import_only != 'true'
         env:
           EBAY_CLIENT_ID:     ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
         run: python -u ebay-db/scripts/fetch_category_master.py fetch EBAY_DE
 
       - name: Step1d - Fetch EBAY_AU
+        if: inputs.import_only != 'true'
         env:
           EBAY_CLIENT_ID:     ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
         run: python -u ebay-db/scripts/fetch_category_master.py fetch EBAY_AU
 
       - name: Step1e - Fetch EBAY_JP
+        if: inputs.import_only != 'true'
         env:
           EBAY_CLIENT_ID:     ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
@@ -65,30 +82,35 @@ jobs:
 
       # ─── Step2: eBay コンディション取得（マーケット別）────
       - name: Step2a - Fetch conditions EBAY_US
+        if: inputs.import_only != 'true'
         env:
           EBAY_CLIENT_ID:     ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
         run: python -u ebay-db/scripts/fetch_conditions.py fetch EBAY_US
 
       - name: Step2b - Fetch conditions EBAY_GB
+        if: inputs.import_only != 'true'
         env:
           EBAY_CLIENT_ID:     ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
         run: python -u ebay-db/scripts/fetch_conditions.py fetch EBAY_GB
 
       - name: Step2c - Fetch conditions EBAY_DE
+        if: inputs.import_only != 'true'
         env:
           EBAY_CLIENT_ID:     ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
         run: python -u ebay-db/scripts/fetch_conditions.py fetch EBAY_DE
 
       - name: Step2d - Fetch conditions EBAY_AU
+        if: inputs.import_only != 'true'
         env:
           EBAY_CLIENT_ID:     ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
         run: python -u ebay-db/scripts/fetch_conditions.py fetch EBAY_AU
 
       - name: Step2e - Fetch conditions EBAY_JP
+        if: inputs.import_only != 'true'
         env:
           EBAY_CLIENT_ID:     ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
@@ -96,20 +118,24 @@ jobs:
 
       # ─── Step3: 全マーケットデータを結合 ──────────────────
       - name: Step3 - Combine all marketplace data
+        if: inputs.import_only != 'true'
         run: python -u ebay-db/scripts/fetch_conditions.py combine
 
       # ─── Step4: FVFレート抽出（Gemini） ───────────────────
       - name: Step4 - Extract FVF rates via Gemini
+        if: inputs.import_only != 'true'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python -u ebay-db/scripts/extract_fvf.py
 
       # ─── Step5: CSV 生成 ───────────────────────────────────
       - name: Step5 - Generate CSV files
+        if: inputs.import_only != 'true'
         run: python -u ebay-db/scripts/generate_csv.py
 
       # ─── Step6: CSV をリポジトリにコミット ────────────────
       - name: Step6 - Commit CSVs to repository
+        if: inputs.import_only != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
