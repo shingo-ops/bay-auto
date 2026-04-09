@@ -13,8 +13,9 @@ import glob
 import argparse
 import requests
 
-MAX_RETRIES = 3
+MAX_RETRIES = 5
 RETRY_WAIT_SECS = [10, 30, 60]
+RATE_LIMIT_WAIT_SECS = [60, 120, 180, 300]  # 429 用: 1分, 2分, 3分, 5分
 
 MARKETPLACES = [
     {"marketplace_id": "EBAY_US", "category_tree_id": "0"},
@@ -47,7 +48,7 @@ def get_access_token() -> str:
 
 
 def fetch_aspects_for_marketplace(token: str, category_tree_id: str) -> list[dict]:
-    """指定マーケットプレイスの全リーフカテゴリスペックを取得（500エラー時はリトライ）"""
+    """指定マーケットプレイスの全リーフカテゴリスペックを取得（429/500エラー時はリトライ）"""
     url = f"{TAXONOMY_API}/category_tree/{category_tree_id}/fetch_item_aspects"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -55,11 +56,25 @@ def fetch_aspects_for_marketplace(token: str, category_tree_id: str) -> list[dic
         "Accept-Encoding": "gzip",   # 明示指定 → requests は自動展開しない（手動展開）
     }
 
+    rate_limit_count = 0
+
     for attempt in range(MAX_RETRIES):
         resp = requests.get(url, headers=headers, timeout=300)
 
+        if resp.status_code == 429:
+            # Retry-After ヘッダーがあればその値を、なければ RATE_LIMIT_WAIT_SECS を使用
+            retry_after = resp.headers.get("Retry-After")
+            if retry_after and retry_after.isdigit():
+                wait = int(retry_after)
+            else:
+                wait = RATE_LIMIT_WAIT_SECS[min(rate_limit_count, len(RATE_LIMIT_WAIT_SECS) - 1)]
+            rate_limit_count += 1
+            print(f"  429 Too Many Requests、{wait}秒後にリトライ (429回数={rate_limit_count}, attempt={attempt + 1}/{MAX_RETRIES}) ...")
+            time.sleep(wait)
+            continue
+
         if resp.status_code == 500 and attempt < MAX_RETRIES - 1:
-            wait = RETRY_WAIT_SECS[attempt]
+            wait = RETRY_WAIT_SECS[min(attempt, len(RETRY_WAIT_SECS) - 1)]
             print(f"  500エラー、{wait}秒後にリトライ ({attempt + 1}/{MAX_RETRIES}) ...")
             time.sleep(wait)
             continue
