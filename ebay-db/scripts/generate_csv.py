@@ -14,23 +14,44 @@ TODAY = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 # condition_enum ハードコードマッピング
 # sell/metadata/v1 getItemConditionPolicies は conditionEnum を返さないため静的定義
-CONDITION_ENUM_MAP: dict[str, str] = {
-    "1000": "NEW",
-    "1500": "NEW_OTHER",
-    "1750": "NEW_WITH_DEFECTS",
-    "2000": "CERTIFIED_REFURBISHED",
-    "2010": "EXCELLENT_REFURBISHED",
-    "2020": "VERY_GOOD_REFURBISHED",
-    "2030": "GOOD_REFURBISHED",
-    "2500": "SELLER_REFURBISHED",
-    "2750": "LIKE_NEW",
-    "2990": "PRE_OWNED_EXCELLENT",
-    "3000": "USED_EXCELLENT",
-    "3010": "PRE_OWNED_FAIR",
-    "4000": "USED_VERY_GOOD",
-    "5000": "USED_GOOD",
-    "6000": "USED_ACCEPTABLE",
-    "7000": "FOR_PARTS_OR_NOT_WORKING",
+CONDITION_ENUM_MAP: dict[int, str] = {
+    1000: "NEW",
+    1500: "NEW_OTHER",
+    1750: "NEW_WITH_DEFECTS",
+    2000: "CERTIFIED_REFURBISHED",
+    2010: "EXCELLENT_REFURBISHED",
+    2020: "VERY_GOOD_REFURBISHED",
+    2030: "GOOD_REFURBISHED",
+    2500: "SELLER_REFURBISHED",
+    2750: "LIKE_NEW",
+    2990: "PRE_OWNED_EXCELLENT",
+    3000: "USED_EXCELLENT",
+    3010: "PRE_OWNED_FAIR",
+    4000: "USED_VERY_GOOD",
+    5000: "USED_GOOD",
+    6000: "USED_ACCEPTABLE",
+    7000: "FOR_PARTS_OR_NOT_WORKING",
+}
+
+# ja_display デフォルト値（eBay標準コンディション向け）
+# カテゴリ固有の表示名（Graded等）は ja_display が空のまま → GeminiTranslate.gs で補完
+JA_DISPLAY_DEFAULT: dict[int, str] = {
+    1000: "新品、未使用",
+    1500: "未使用に近い",
+    1750: "新品、未使用（難あり）",
+    2000: "メーカー整備済み",
+    2010: "整備済み - 非常に良い",
+    2020: "整備済み - 良い",
+    2030: "整備済み - やや傷あり",
+    2500: "セラー整備済み",
+    2750: "未使用に近い",
+    2990: "目立った傷や汚れなし",
+    3000: "やや傷や汚れあり",
+    3010: "傷や汚れあり",
+    4000: "目立った傷や汚れなし",
+    5000: "やや傷や汚れあり",
+    6000: "全体的に状態が悪い",
+    7000: "ジャンク品（部品取り用）",
 }
 
 
@@ -115,11 +136,12 @@ def generate_condition_ja_map(rows: list[dict]) -> None:
             cid = str(c.get("id", ""))
             if not cid or cid in seen:
                 continue
+            cid_int = int(cid) if cid.isdigit() else None
             seen[cid] = {
                 "condition_id":   cid,
                 "condition_name": c.get("name", ""),
-                "condition_enum": CONDITION_ENUM_MAP.get(cid, c.get("enum", "")),
-                "ja_display":     "",   # GeminiTranslate.gs で補完
+                "condition_enum": CONDITION_ENUM_MAP.get(cid_int, c.get("enum", "")),
+                "ja_display":     JA_DISPLAY_DEFAULT.get(cid_int, ""),
                 "ja_description": "",
                 "last_synced":    TODAY,
             }
