@@ -364,33 +364,46 @@ function getCategoryMasterData(categoryId) {
       return null;
     }
 
-    // カテゴリIDで検索（A列）
     const lastRow = sheet.getLastRow();
-    const categoryIds = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    const lastCol = sheet.getLastColumn();
 
-    let targetRow = -1;
-    for (let i = 0; i < categoryIds.length; i++) {
+    // ヘッダー行を取得してインデックスを解決
+    const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    const colIdx = {
+      categoryId:          headers.indexOf('category_id'),
+      categoryName:        headers.indexOf('category_name'),
+      requiredSpecsJson:   headers.indexOf('required_specs_json'),
+      recommendedSpecsJson: headers.indexOf('recommended_specs_json'),
+      optionalSpecsJson:   headers.indexOf('optional_specs_json')
+    };
+
+    if (colIdx.categoryId === -1) {
+      Logger.log('category_master に category_id 列が見つかりません');
+      return null;
+    }
+
+    // カテゴリIDで検索
+    const allData = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    let rowData = null;
+    for (let i = 0; i < allData.length; i++) {
       // カテゴリIDは文字列で保存されている可能性があるため、文字列比較
-      if (categoryIds[i][0].toString() === categoryId.toString()) {
-        targetRow = i + 2; // ヘッダー行を考慮
+      if (allData[i][colIdx.categoryId].toString() === categoryId.toString()) {
+        rowData = allData[i];
         break;
       }
     }
 
-    if (targetRow === -1) {
+    if (!rowData) {
       Logger.log('カテゴリID ' + categoryId + ' がカテゴリマスタに見つかりません');
       return null;
     }
 
-    // カテゴリデータを取得
-    const rowData = sheet.getRange(targetRow, 1, 1, 7).getValues()[0];
-
     const categoryData = {
-      categoryId: rowData[0],
-      categoryName: rowData[1],
-      requiredAspects: JSON.parse(rowData[3] || '[]'),
-      recommendedAspects: JSON.parse(rowData[4] || '[]'),
-      optionalAspects: JSON.parse(rowData[5] || '[]')
+      categoryId:        rowData[colIdx.categoryId],
+      categoryName:      colIdx.categoryName !== -1      ? rowData[colIdx.categoryName] : '',
+      requiredAspects:   colIdx.requiredSpecsJson !== -1   ? JSON.parse(rowData[colIdx.requiredSpecsJson]    || '[]') : [],
+      recommendedAspects: colIdx.recommendedSpecsJson !== -1 ? JSON.parse(rowData[colIdx.recommendedSpecsJson] || '[]') : [],
+      optionalAspects:   colIdx.optionalSpecsJson !== -1   ? JSON.parse(rowData[colIdx.optionalSpecsJson]   || '[]') : []
     };
 
     Logger.log('カテゴリマスタデータ取得: ' + categoryData.categoryName);

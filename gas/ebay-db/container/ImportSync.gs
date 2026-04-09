@@ -476,6 +476,75 @@ function transferToServiceBook(ss, config) {
 // ユーティリティ
 // ─────────────────────────────────────────
 
+// ─────────────────────────────────────────
+// 診断ユーティリティ
+// ─────────────────────────────────────────
+
+/**
+ * 実シートのヘッダー行を読み取り Discord に通知する診断関数
+ *
+ * 使用方法:
+ *   sync-ebay-db.yml を import_only: true / run_function: checkSheetHeaders で
+ *   手動 dispatch すると clasp push → この関数が実行される
+ *
+ * 確認対象:
+ *   - condition_ja_map          （現行スキーマ）
+ *   - condition_master          （旧シート・残存していないか確認）
+ *   - condition_group_map       （旧シート・残存していないか確認）
+ *   - category_master_EBAY_*   （全マーケット）
+ */
+function checkSheetHeaders() {
+  var ss  = SpreadsheetApp.getActiveSpreadsheet();
+  var now = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd HH:mm');
+
+  var lines = [];
+  lines.push('🔍 **シートヘッダー診断** — ' + now);
+  lines.push('SpreadsheetID: `' + ss.getId() + '`');
+  lines.push('');
+
+  // 確認対象シートリスト
+  var targets = [
+    'condition_ja_map',
+    'condition_master',   // 旧シート（残存確認）
+    'condition_group_map' // 旧シート（残存確認）
+  ].concat(CATEGORY_MARKETPLACES.map(function(mp) {
+    return 'category_master_' + mp;
+  }));
+
+  targets.forEach(function(name) {
+    var sheet = ss.getSheetByName(name);
+
+    if (!sheet) {
+      lines.push('❌ **' + name + '**: シートなし');
+      return;
+    }
+
+    var lastCol = sheet.getLastColumn();
+    var lastRow = sheet.getLastRow();
+
+    if (lastCol === 0 || lastRow === 0) {
+      lines.push('⚠️ **' + name + '**: シートあり・完全に空（ヘッダーなし）');
+      return;
+    }
+
+    var headers  = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    var rowCount = Math.max(0, lastRow - 1);
+
+    lines.push('✅ **' + name + '** (' + rowCount + '行)');
+    lines.push('　`' + headers.join(' | ') + '`');
+  });
+
+  var message = lines.join('\n');
+
+  // Discord の 2000 文字制限に対応
+  if (message.length > 1900) {
+    message = message.substring(0, 1900) + '\n…(省略)';
+  }
+
+  notifyDiscord(message);
+  Logger.log(message);
+}
+
 /**
  * 手動実行用: セットアップ（初回のみ）
  */

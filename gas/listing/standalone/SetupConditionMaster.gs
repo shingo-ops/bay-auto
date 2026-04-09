@@ -1,31 +1,31 @@
 /**
  * SetupConditionMaster.gs
  *
- * condition_master シートを作成し、eBay Condition ID のマスターデータを設定します。
+ * condition_ja_map シートを作成し、eBay Condition ID のマスターデータを設定します。
  * このスクリプトは1回実行するだけで完了します。
  */
 
 /**
- * condition_master シートを作成し、マスターデータを投入
+ * condition_ja_map シートを作成し、マスターデータを投入
  * 実行方法: Google Apps Script エディタでこの関数を選択して実行
  */
-function createConditionMasterSheet() {
+function createConditionJaMapSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
   // 既存のシートを確認
-  let sheet = ss.getSheetByName('condition_master');
+  let sheet = ss.getSheetByName('condition_ja_map');
 
   if (sheet) {
     const ui = SpreadsheetApp.getUi();
     const response = ui.alert(
-      'condition_master シートが既に存在します',
+      'condition_ja_map シートが既に存在します',
       '既存のシートを削除して再作成しますか？',
       ui.ButtonSet.YES_NO
     );
 
     if (response === ui.Button.YES) {
       ss.deleteSheet(sheet);
-      Logger.log('既存の condition_master シートを削除しました');
+      Logger.log('既存の condition_ja_map シートを削除しました');
     } else {
       Logger.log('処理をキャンセルしました');
       return;
@@ -33,8 +33,8 @@ function createConditionMasterSheet() {
   }
 
   // 新しいシートを作成
-  sheet = ss.insertSheet('condition_master');
-  Logger.log('condition_master シートを作成しました');
+  sheet = ss.insertSheet('condition_ja_map');
+  Logger.log('condition_ja_map シートを作成しました');
 
   // ヘッダー行を設定
   const headers = [
@@ -43,7 +43,7 @@ function createConditionMasterSheet() {
     'condition_enum',
     'group',
     'requires_approval',
-    'ja_display_name',
+    'ja_display',
     'ja_check_1',
     'ja_check_2',
     'notes'
@@ -88,7 +88,7 @@ function createConditionMasterSheet() {
   sheet.setColumnWidth(3, 180);  // condition_enum
   sheet.setColumnWidth(4, 100);  // group
   sheet.setColumnWidth(5, 140);  // requires_approval
-  sheet.setColumnWidth(6, 280);  // ja_display_name
+  sheet.setColumnWidth(6, 280);  // ja_display
   sheet.setColumnWidth(7, 120);  // ja_check_1
   sheet.setColumnWidth(8, 120);  // ja_check_2
   sheet.setColumnWidth(9, 300);  // notes
@@ -109,28 +109,28 @@ function createConditionMasterSheet() {
     '#cccccc', SpreadsheetApp.BorderStyle.SOLID
   );
 
-  Logger.log('condition_master シートの作成が完了しました');
+  Logger.log('condition_ja_map シートの作成が完了しました');
   Logger.log('データ行数: ' + conditionData.length);
 
   SpreadsheetApp.getUi().alert(
-    'condition_master シート作成完了',
+    'condition_ja_map シート作成完了',
     conditionData.length + '行のConditionデータを挿入しました。',
     SpreadsheetApp.getUi().ButtonSet.OK
   );
 }
 
 /**
- * condition_master シートからCondition情報を取得
+ * condition_ja_map シートからCondition情報を取得
  *
  * @param {string} conditionId - Condition ID (例: "1000")
  * @returns {Object|null} Condition情報オブジェクト、または null
  */
 function getConditionInfo(conditionId) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('condition_master');
+  const sheet = ss.getSheetByName('condition_ja_map');
 
   if (!sheet) {
-    Logger.log('condition_master シートが見つかりません');
+    Logger.log('condition_ja_map シートが見つかりません');
     return null;
   }
 
@@ -152,7 +152,7 @@ function getConditionInfo(conditionId) {
         condition_enum: data[i][indices['condition_enum']],
         group: data[i][indices['group']],
         requires_approval: data[i][indices['requires_approval']],
-        ja_display_name: data[i][indices['ja_display_name']],
+        ja_display: data[i][indices['ja_display']],
         ja_check_1: data[i][indices['ja_check_1']],
         ja_check_2: data[i][indices['ja_check_2']],
         notes: data[i][indices['notes']]
