@@ -1,0 +1,37 @@
+# eBay利益計算ツール - デプロイ除外ファイル
+# 開発・デバッグ用ファイルは本番デプロイから除外
+
+# ドキュメント
+*.md
+IMAGE_BUTTON_SETUP.md
+SETUP_CODE_ANALYSIS.md
+
+# 開発・デバッグ用ファイル
+DetailedInspection.gs
+DiagnoseNoDataIssue.gs
+FixNoDataIssues.gs
+FixRefError.gs
+InspectAllShippingSheets.gs
+InspectExcludeListMisalignment.gs
+InspectFormulas.gs
+InspectRefError.gs
+InspectRow13Detail.gs
+InspectSearchBaseSheet.gs
+InspectSheet.gs
+InvestigateQColumnValidation.gs
+SaveInvestigationResults.gs
+VerifyCurrentState.gs
+VerifyHeaderMapping.gs
+
+# テストファイル（本番では不要だが、開発時は使用）
+# Test.gs
+
+# Chrome拡張機能（GASにアップロード不要）
+amazon-image-extractor-extension/**
+**/amazon-image-extractor-extension/**
+
+# その他
+.git
+.gitignore
+node_modules
+.npm-cache
