@@ -492,6 +492,7 @@ function setupAll() {
  */
 function setupHeaders() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) return 'ERROR: getActiveSpreadsheet() returned null';
 
   var CATEGORY_HEADERS = [
     'marketplace_id', 'category_tree_id', 'category_id', 'category_name',
@@ -505,6 +506,8 @@ function setupHeaders() {
     'ja_display', 'ja_description', 'last_synced'
   ];
 
+  var results = [];
+
   // category_master_EBAY_XX（4シート）
   CATEGORY_MARKETPLACES.forEach(function(mp) {
     var name = 'category_master_' + mp;
@@ -515,7 +518,7 @@ function setupHeaders() {
     headerRange.setFontColor('#ffffff');
     headerRange.setFontWeight('bold');
     sheet.setFrozenRows(1);
-    Logger.log(name + ': ヘッダー設定完了 (' + CATEGORY_HEADERS.length + '列)');
+    results.push(name + ':OK');
   });
 
   // condition_ja_map
@@ -526,7 +529,7 @@ function setupHeaders() {
   conHeaderRange.setFontColor('#ffffff');
   conHeaderRange.setFontWeight('bold');
   conSheet.setFrozenRows(1);
-  Logger.log('condition_ja_map: ヘッダー設定完了 (' + CONDITION_HEADERS.length + '列)');
+  results.push('condition_ja_map:OK');
 
-  Logger.log('=== setupHeaders 完了: 5シート ===');
+  return 'spreadsheetId=' + ss.getId() + ' | ' + results.join(', ');
 }
