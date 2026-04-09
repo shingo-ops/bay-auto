@@ -63,10 +63,12 @@ def load_json(path: str) -> any:
 
 
 def generate_category_master(rows: list[dict], fvf_rates: dict) -> None:
-    """マーケットプレイスごとに category_master_EBAY_XX.csv を生成
+    """マーケットプレイスごとに category_master_EBAY_XX.csv を生成（13列）
 
-    スペック列（required/recommended/optional_specs_json）は除外する。
-    218MBになりGitHub 100MB制限・Google Sheets制限を超えるため。
+    列定義: marketplace_id, category_tree_id, category_id, category_name,
+            required_specs_json, recommended_specs_json, optional_specs_json,
+            aspect_values_json, aspect_modes_json, multi_value_aspects_json,
+            conditions_json, fvf_rate, last_synced
     """
     fieldnames = [
         "marketplace_id", "category_tree_id", "category_id", "category_name",

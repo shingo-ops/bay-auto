@@ -481,6 +481,145 @@ function transferToServiceBook(ss, config) {
 // ─────────────────────────────────────────
 
 /**
+ * 原本・サービス提供用ブックの全シートヘッダーを比較してターミナルに返す
+ * 使用方法: clasp run auditAllSheetHeaders | jq -r '.'
+ * @returns {string} 比較レポート
+ */
+function auditAllSheetHeaders() {
+  var ss     = SpreadsheetApp.getActiveSpreadsheet();
+  var config = getConfig();
+  var svcId  = config['SERVICE_BOOK_ID'];
+  var lines  = [];
+
+  // ── 原本ブック ──────────────────────────────
+  lines.push('=== 原本ブック: ' + ss.getId() + ' ===');
+  var srcMap = {};
+  ss.getSheets().forEach(function(sheet) {
+    var name = sheet.getName();
+    var lc = sheet.getLastColumn(), lr = sheet.getLastRow();
+    if (lc === 0 || lr === 0) {
+      lines.push('  [空] ' + name);
+      srcMap[name] = null;
+    } else {
+      var h = sheet.getRange(1, 1, 1, lc).getValues()[0];
+      lines.push('  ' + name + ' (' + (lr - 1) + '行): ' + h.join(' | '));
+      srcMap[name] = h;
+    }
+  });
+
+  // ── サービス提供用ブック ────────────────────
+  lines.push('');
+  if (!svcId) {
+    lines.push('=== サービス提供用ブック: SERVICE_BOOK_ID 未設定 ===');
+    return lines.join('\n');
+  }
+  lines.push('=== サービス提供用ブック: ' + svcId + ' ===');
+  var dstMap = {};
+  try {
+    var svc = SpreadsheetApp.openById(svcId);
+    svc.getSheets().forEach(function(sheet) {
+      var name = sheet.getName();
+      var lc = sheet.getLastColumn(), lr = sheet.getLastRow();
+      if (lc === 0 || lr === 0) {
+        lines.push('  [空] ' + name);
+        dstMap[name] = null;
+      } else {
+        var h = sheet.getRange(1, 1, 1, lc).getValues()[0];
+        lines.push('  ' + name + ' (' + (lr - 1) + '行): ' + h.join(' | '));
+        dstMap[name] = h;
+      }
+    });
+  } catch (e) {
+    lines.push('  ERROR: ' + e.toString());
+    return lines.join('\n');
+  }
+
+  // ── 転記対象の整合性チェック ────────────────
+  lines.push('');
+  lines.push('=== 転記対象の整合性チェック ===');
+  var targets = CATEGORY_MARKETPLACES.map(function(mp) {
+    return 'category_master_' + mp;
+  }).concat(['condition_ja_map']);
+
+  var allOk = true;
+  targets.forEach(function(name) {
+    var src = srcMap[name], dst = dstMap[name];
+    if (!src) {
+      lines.push('  ⚠ ' + name + ': 原本にシートなし');
+      allOk = false;
+    } else if (!dst) {
+      lines.push('  ⚠ ' + name + ': サービス提供用にシートなし（importAndSync で作成される）');
+      allOk = false;
+    } else if (JSON.stringify(src) !== JSON.stringify(dst)) {
+      lines.push('  ❌ ' + name + ': ヘッダー不一致');
+      lines.push('     原本:    ' + src.join(' | '));
+      lines.push('     サービス: ' + dst.join(' | '));
+      allOk = false;
+    } else {
+      lines.push('  ✓ ' + name + ': ヘッダー一致 (' + src.length + '列)');
+    }
+  });
+
+  if (allOk) lines.push('  → 全転記対象シートのヘッダーが一致しています');
+
+  var result = lines.join('\n');
+  Logger.log(result);
+  return result;
+}
+
+/**
+ * 旧シートを原本・サービス提供用ブックから削除する
+ * clasp run deleteOldSheets で実行
+ * @returns {string} 削除結果レポート
+ */
+function deleteOldSheets() {
+  var ss     = SpreadsheetApp.getActiveSpreadsheet();
+  var config = getConfig();
+  var svcId  = config['SERVICE_BOOK_ID'];
+  var lines  = [];
+  var now    = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd HH:mm');
+
+  lines.push('=== 旧シート削除 ' + now + ' ===');
+
+  // 原本ブックから削除対象
+  var srcTargets = ['category_master'];
+  srcTargets.forEach(function(name) {
+    var sheet = ss.getSheetByName(name);
+    if (!sheet) {
+      lines.push('[原本] ' + name + ': シートなし（スキップ）');
+      return;
+    }
+    ss.deleteSheet(sheet);
+    lines.push('[原本] ' + name + ': 削除完了');
+  });
+
+  // サービス提供用ブックから削除対象
+  if (!svcId) {
+    lines.push('[サービス] SERVICE_BOOK_ID 未設定のためスキップ');
+  } else {
+    var dstTargets = ['カテゴリマスタ', 'category_master', 'condition_group_map', 'category_group_id_tmp'];
+    try {
+      var svc = SpreadsheetApp.openById(svcId);
+      dstTargets.forEach(function(name) {
+        var sheet = svc.getSheetByName(name);
+        if (!sheet) {
+          lines.push('[サービス] ' + name + ': シートなし（スキップ）');
+          return;
+        }
+        svc.deleteSheet(sheet);
+        lines.push('[サービス] ' + name + ': 削除完了');
+      });
+    } catch (e) {
+      lines.push('[サービス] オープン失敗: ' + e.toString());
+    }
+  }
+
+  var result = lines.join('\n');
+  Logger.log(result);
+  return result;
+}
+
+/**
  * 実シートのヘッダー行を読み取り Discord に通知する診断関数
  *
  * 使用方法:
