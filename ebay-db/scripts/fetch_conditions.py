@@ -16,7 +16,8 @@ import requests
 from collections import defaultdict
 
 TAXONOMY_API = "https://api.ebay.com/commerce/taxonomy/v1"
-SAMPLE_PER_MARKET = int(os.environ.get("CONDITIONS_SAMPLE_PER_MARKET", "100"))
+SAMPLE_PER_MARKET = int(os.environ.get("CONDITIONS_SAMPLE_PER_MARKET", "20"))
+API_TIMEOUT_SECS = int(os.environ.get("CONDITIONS_API_TIMEOUT", "5"))
 
 
 def get_access_token() -> str:
@@ -48,7 +49,7 @@ def fetch_conditions(token: str, category_tree_id: str, category_id: str) -> lis
         "Accept": "application/json",
     }
 
-    resp = requests.get(url, headers=headers, timeout=30)
+    resp = requests.get(url, headers=headers, timeout=API_TIMEOUT_SECS)
     if resp.status_code == 204:
         return []
     resp.raise_for_status()
