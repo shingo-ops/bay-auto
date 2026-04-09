@@ -1,13 +1,16 @@
 """
 fetch_category_master.py
 eBay Taxonomy API の fetchItemAspects で全リーフカテゴリのスペックを取得
-出力: category_raw.json
+出力: category_raw_{marketplace_id}.json (--marketplace 指定時)
+      category_raw.json (--combine 時に全ファイルを結合)
 """
 
 import os
 import json
 import gzip
 import time
+import glob
+import argparse
 import requests
 
 MAX_RETRIES = 3
@@ -121,33 +124,99 @@ def build_category_rows(aspects: list[dict], marketplace_id: str, category_tree_
     return rows
 
 
-def main():
-    print("=== fetch_category_master.py 開始 ===")
+def cmd_fetch(marketplace_id: str):
+    """1マーケットのみ取得して category_raw_{marketplace_id}.json に保存"""
+    target = next((mp for mp in MARKETPLACES if mp["marketplace_id"] == marketplace_id), None)
+    if not target:
+        print(f"❌ 不明なマーケットプレイス: {marketplace_id}")
+        raise SystemExit(1)
+
+    print(f"=== fetch_category_master.py [{marketplace_id}] 開始 ===")
     token = get_access_token()
+
+    print(f"取得中: {target['marketplace_id']} (tree_id={target['category_tree_id']})")
+    aspects = fetch_aspects_for_marketplace(token, target["category_tree_id"])
+    rows = build_category_rows(aspects, target["marketplace_id"], target["category_tree_id"])
+    print(f"  → {len(rows)} カテゴリ取得")
+
+    out_dir = os.environ.get("OUTPUT_DIR", ".")
+    output_path = f"{out_dir}/category_raw_{marketplace_id}.json"
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(rows, f, ensure_ascii=False, indent=2)
+
+    print(f"=== 完了: {len(rows)} 行 → {output_path} ===")
+
+    if len(rows) == 0:
+        print(f"❌ エラー: データが0件です")
+        raise SystemExit(1)
+
+
+def cmd_combine():
+    """全マーケットの category_raw_*.json を結合して category_raw.json に出力"""
+    out_dir = os.environ.get("OUTPUT_DIR", ".")
+    pattern = f"{out_dir}/category_raw_EBAY_*.json"
+    files = sorted(glob.glob(pattern))
+
+    if not files:
+        print(f"❌ エラー: {pattern} にファイルが見つかりません")
+        raise SystemExit(1)
+
     all_rows = []
-    failed_markets = []
+    for path in files:
+        with open(path, encoding="utf-8") as f:
+            rows = json.load(f)
+        print(f"  {os.path.basename(path)}: {len(rows)} 行")
+        all_rows.extend(rows)
 
-    for mp in MARKETPLACES:
-        print(f"取得中: {mp['marketplace_id']} (tree_id={mp['category_tree_id']})")
-        try:
-            aspects = fetch_aspects_for_marketplace(token, mp["category_tree_id"])
-            rows = build_category_rows(aspects, mp["marketplace_id"], mp["category_tree_id"])
-            all_rows.extend(rows)
-            print(f"  → {len(rows)} カテゴリ取得")
-        except Exception as e:
-            failed_markets.append(mp["marketplace_id"])
-            print(f"  ⚠️ {mp['marketplace_id']} 取得失敗: {e}")
-
-    output_path = os.environ.get("OUTPUT_DIR", ".") + "/category_raw.json"
+    output_path = f"{out_dir}/category_raw.json"
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(all_rows, f, ensure_ascii=False, indent=2)
 
-    print(f"=== 完了: {len(all_rows)} 行 → {output_path} ===")
+    print(f"=== combine 完了: 合計 {len(all_rows)} 行 → {output_path} ===")
 
-    # 全マーケットプレイス失敗 or データ0件なら異常終了
-    if len(all_rows) == 0:
-        print(f"❌ エラー: データが0件です。失敗: {failed_markets}")
-        raise SystemExit(1)
+
+def main():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+
+    fetch_parser = subparsers.add_parser("fetch", help="1マーケット取得")
+    fetch_parser.add_argument("marketplace_id", help="例: EBAY_US")
+
+    subparsers.add_parser("combine", help="全マーケットファイルを結合")
+
+    args = parser.parse_args()
+
+    if args.command == "fetch":
+        cmd_fetch(args.marketplace_id)
+    elif args.command == "combine":
+        cmd_combine()
+    else:
+        # 後方互換: 引数なしで全マーケット順次取得
+        print("=== fetch_category_master.py 開始 (全マーケット) ===")
+        token = get_access_token()
+        all_rows = []
+        failed_markets = []
+
+        for mp in MARKETPLACES:
+            print(f"取得中: {mp['marketplace_id']} (tree_id={mp['category_tree_id']})")
+            try:
+                aspects = fetch_aspects_for_marketplace(token, mp["category_tree_id"])
+                rows = build_category_rows(aspects, mp["marketplace_id"], mp["category_tree_id"])
+                all_rows.extend(rows)
+                print(f"  → {len(rows)} カテゴリ取得")
+            except Exception as e:
+                failed_markets.append(mp["marketplace_id"])
+                print(f"  ⚠️ {mp['marketplace_id']} 取得失敗: {e}")
+
+        output_path = os.environ.get("OUTPUT_DIR", ".") + "/category_raw.json"
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(all_rows, f, ensure_ascii=False, indent=2)
+
+        print(f"=== 完了: {len(all_rows)} 行 → {output_path} ===")
+
+        if len(all_rows) == 0:
+            print(f"❌ エラー: データが0件です。失敗: {failed_markets}")
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":

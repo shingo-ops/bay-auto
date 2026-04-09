@@ -14,6 +14,7 @@ jobs:
 
     env:
       OUTPUT_DIR: ${{ github.workspace }}/ebay-db/output
+      PYTHONUNBUFFERED: '1'
 
     steps:
       - name: Checkout repository
@@ -31,35 +32,56 @@ jobs:
       - name: Install dependencies
         run: pip install -r ebay-db/scripts/requirements.txt
 
-      # ─── Step1: eBay カテゴリスペック取得 ─────────────────
-      - name: Step1 - Fetch category aspects (fetchItemAspects)
+      # ─── Step1: eBay カテゴリスペック取得（マーケット別）──
+      - name: Step1a - Fetch EBAY_US
         env:
           EBAY_CLIENT_ID:     ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
-          OUTPUT_DIR:         ${{ env.OUTPUT_DIR }}
-          PYTHONUNBUFFERED:   '1'
-        run: python -u ebay-db/scripts/fetch_category_master.py
+        run: python -u ebay-db/scripts/fetch_category_master.py fetch EBAY_US
+
+      - name: Step1b - Fetch EBAY_GB
+        env:
+          EBAY_CLIENT_ID:     ${{ secrets.EBAY_CLIENT_ID }}
+          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+        run: python -u ebay-db/scripts/fetch_category_master.py fetch EBAY_GB
+
+      - name: Step1c - Fetch EBAY_DE
+        env:
+          EBAY_CLIENT_ID:     ${{ secrets.EBAY_CLIENT_ID }}
+          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+        run: python -u ebay-db/scripts/fetch_category_master.py fetch EBAY_DE
+
+      - name: Step1d - Fetch EBAY_AU
+        env:
+          EBAY_CLIENT_ID:     ${{ secrets.EBAY_CLIENT_ID }}
+          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+        run: python -u ebay-db/scripts/fetch_category_master.py fetch EBAY_AU
+
+      - name: Step1e - Fetch EBAY_JP
+        env:
+          EBAY_CLIENT_ID:     ${{ secrets.EBAY_CLIENT_ID }}
+          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+        run: python -u ebay-db/scripts/fetch_category_master.py fetch EBAY_JP
+
+      - name: Step1f - Combine all marketplace data
+        run: python -u ebay-db/scripts/fetch_category_master.py combine
 
       # ─── Step2: eBay コンディション取得 ───────────────────
       - name: Step2 - Fetch item condition policies
         env:
           EBAY_CLIENT_ID:     ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
-          OUTPUT_DIR:         ${{ env.OUTPUT_DIR }}
-        run: python ebay-db/scripts/fetch_conditions.py
+        run: python -u ebay-db/scripts/fetch_conditions.py
 
       # ─── Step3: FVFレート抽出（Gemini） ───────────────────
       - name: Step3 - Extract FVF rates via Gemini
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          OUTPUT_DIR:     ${{ env.OUTPUT_DIR }}
-        run: python ebay-db/scripts/extract_fvf.py
+        run: python -u ebay-db/scripts/extract_fvf.py
 
       # ─── Step4: CSV 生成 ───────────────────────────────────
       - name: Step4 - Generate CSV files
-        env:
-          OUTPUT_DIR: ${{ env.OUTPUT_DIR }}
-        run: python ebay-db/scripts/generate_csv.py
+        run: python -u ebay-db/scripts/generate_csv.py
 
       # ─── Step5: CSV をリポジトリにコミット ────────────────
       - name: Step5 - Commit CSVs to repository
