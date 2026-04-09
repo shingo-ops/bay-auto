@@ -18,6 +18,7 @@ CONDITION_ENUM_MAP: dict[int, str] = {
     1000: "NEW",
     1500: "NEW_OTHER",
     1750: "NEW_WITH_DEFECTS",
+    1900: "UNUSED",
     2000: "CERTIFIED_REFURBISHED",
     2010: "EXCELLENT_REFURBISHED",
     2020: "VERY_GOOD_REFURBISHED",
@@ -39,6 +40,7 @@ JA_DISPLAY_DEFAULT: dict[int, str] = {
     1000: "新品、未使用",
     1500: "未使用に近い",
     1750: "新品、未使用（難あり）",
+    1900: "未使用",
     2000: "メーカー整備済み",
     2010: "整備済み - 非常に良い",
     2020: "整備済み - 良い",
@@ -153,6 +155,17 @@ def generate_condition_ja_map(rows: list[dict]) -> None:
                 "ja_description": "",
                 "last_synced":    TODAY,
             }
+
+    # マッピング辞書に未定義の condition_id をログ出力
+    undefined_ids = sorted(
+        (cid for cid in seen if not (cid.isdigit() and int(cid) in CONDITION_ENUM_MAP)),
+        key=lambda x: int(x) if x.isdigit() else x,
+    )
+    if undefined_ids:
+        print(f"[WARN] マッピング辞書未定義の condition_id ({len(undefined_ids)} 件): "
+              + ", ".join(undefined_ids))
+    else:
+        print("[INFO] 未定義 condition_id なし（全IDがマッピング済み）")
 
     output_path = f"{OUTPUT_DIR}/condition_ja_map.csv"
     with open(output_path, "w", newline="", encoding="utf-8") as f:
