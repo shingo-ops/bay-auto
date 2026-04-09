@@ -1,0 +1,14 @@
+# listing/standalone - デプロイ除外ファイル
+# bay-auto リポジトリ構造に準拠（フラット構造のため src/** パターンは不使用）
+
+# ドキュメント
+*.md
+
+# Git・Node.js
+.git
+.gitignore
+node_modules
+.npm-cache
+
+# このファイル自身
+.claspignore
