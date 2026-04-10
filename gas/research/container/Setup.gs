@@ -493,6 +493,18 @@ function handleEdit(e) {
       Logger.log('fetchCategoryFromUrl を呼び出します');
       fetchCategoryFromUrl(url.toString(), sheet);
 
+    // D8セル（スペックURL）の編集 → スペック情報をAPIで取得して_cacheに保存
+    } else if (editedCol === RESEARCH_ITEM_LIST.COLUMNS.SPEC_URL.col) {
+      const specUrl = range.getValue();
+      Logger.log('✅ スペックURLセル編集を検知: ' + specUrl);
+
+      if (!specUrl || specUrl.toString().trim() === '') {
+        Logger.log('スペックURLが空のためスキップ');
+        return;
+      }
+
+      fetchSpecFromUrl(specUrl.toString(), sheet);
+
     // G8セル（カテゴリID）の手動編集 → 状態プルダウンを更新
     } else if (editedCol === RESEARCH_ITEM_LIST.COLUMNS.CATEGORY_ID.col) {
       const categoryId = range.getValue();
@@ -581,6 +593,154 @@ function fetchCategoryFromUrl(url, sheet) {
     // カテゴリ情報をクリア
     sheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.CATEGORY_ID.col).setValue('');
     sheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.CATEGORY_NAME.col).setValue('');
+  }
+}
+
+// ==========================================
+// スペックURL処理（D8セル）
+// ==========================================
+
+/**
+ * スペックURL（D8）入力時にAPIでスペック情報を取得して _cache に保存
+ *
+ * フロー:
+ *   1. getProductInfoFromUrl(url) → API呼び出し → _cache に自動保存（新カテゴリで）
+ *   2. 取得カテゴリ ≠ 現行G8カテゴリ → handleSpecCategoryMismatch へ
+ *   3. 取得カテゴリ = 現行G8カテゴリ（or G8が空） → そのまま完了
+ *
+ * @param {string} url スペックURL（D8の値）
+ * @param {Sheet}  sheet リサーチシート
+ */
+function fetchSpecFromUrl(url, sheet) {
+  try {
+    SpreadsheetApp.getActiveSpreadsheet().toast('スペック情報を取得中...', 'eBay API', 5);
+
+    // API 呼び出し（キャッシュミス時のみ）& _cache に自動保存
+    const productInfo = getProductInfoFromUrl(url);
+
+    const newCategoryId   = String(productInfo.category.categoryId   || '');
+    const newCategoryName = String(productInfo.category.categoryName || '');
+    const newSpecifics    = productInfo.specifics || {};
+
+    // G8（カテゴリID）の現行値と比較
+    const existingCategoryId   = String(
+      sheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.CATEGORY_ID.col).getValue() || ''
+    );
+    const existingCategoryName = String(
+      sheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.CATEGORY_NAME.col).getValue() || ''
+    );
+
+    if (!existingCategoryId || existingCategoryId === newCategoryId) {
+      // 一致 or G8未入力 → キャッシュ保存済み、そのまま完了
+      Logger.log('[Spec] カテゴリ一致 → キャッシュ保存完了: ' + url);
+      SpreadsheetApp.getActiveSpreadsheet().toast(
+        'スペック情報をキャッシュに保存しました（カテゴリ: ' + newCategoryId + '）',
+        '✅ 完了', 3
+      );
+      return;
+    }
+
+    // カテゴリ不一致 → ダイアログ処理へ
+    handleSpecCategoryMismatch(
+      sheet, url,
+      existingCategoryId, existingCategoryName,
+      newCategoryId, newCategoryName, newSpecifics
+    );
+
+  } catch (error) {
+    Logger.log('[Spec] fetchSpecFromUrl エラー: ' + error.toString());
+    SpreadsheetApp.getActiveSpreadsheet().toast(
+      'スペック情報の取得に失敗しました。\n' + error.message,
+      '⚠️ エラー', 8
+    );
+  }
+}
+
+/**
+ * スペックURLのカテゴリがG8と異なる場合のダイアログ処理
+ *
+ * YES → G8/H8 を新カテゴリで更新・プルダウン再生成・コンディション値を検証
+ * NO  → G8/H8 は変更せず、_cache のカテゴリを既存値に戻してスペックのみ保存
+ *
+ * @param {Sheet}  sheet
+ * @param {string} specUrl
+ * @param {string} existingCategoryId
+ * @param {string} existingCategoryName
+ * @param {string} newCategoryId
+ * @param {string} newCategoryName
+ * @param {Object} newSpecifics
+ */
+function handleSpecCategoryMismatch(
+  sheet, specUrl,
+  existingCategoryId, existingCategoryName,
+  newCategoryId, newCategoryName, newSpecifics
+) {
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert(
+    'カテゴリ不一致',
+    '現在: ' + existingCategoryId + ' (' + existingCategoryName + ')\n' +
+    '取得: ' + newCategoryId + ' (' + newCategoryName + ')\n\n' +
+    '取得したカテゴリに更新しますか？',
+    ui.ButtonSet.YES_NO
+  );
+
+  if (response === ui.Button.YES) {
+    // ── YES: G8/H8 を新カテゴリに更新 ──────────────────────
+    sheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.CATEGORY_ID.col).setValue(newCategoryId);
+    sheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.CATEGORY_NAME.col).setValue(newCategoryName);
+
+    // E8（コンディション）の現行値を保持
+    const conditionCell     = sheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.CONDITION.col);
+    const oldConditionValue = String(conditionCell.getValue() || '');
+
+    // 新カテゴリでプルダウン再生成
+    setConditionDropdown(newCategoryId, sheet);
+
+    // 旧コンディション値が新カテゴリのプルダウンに存在するか確認
+    if (oldConditionValue) {
+      const categoryMasterSs = openCategoryMasterSs();
+      if (categoryMasterSs) {
+        const group   = getConditionGroupForCategory(categoryMasterSs, newCategoryId);
+        const jaMap   = group ? getJaMapForGroup(categoryMasterSs, group) : null;
+        const validOptions = jaMap
+          ? Object.values(jaMap).filter(function(v) { return v && v.trim() !== ''; })
+          : [];
+
+        if (validOptions.indexOf(oldConditionValue) === -1) {
+          // 旧値が新プルダウンにない → クリアして再選択を促す
+          conditionCell.clearContent();
+          ui.alert(
+            'コンディション再選択',
+            '選択されていた「' + oldConditionValue + '」は新しいカテゴリでは使用できません。\n' +
+            'プルダウンから再度選択してください。',
+            ui.ButtonSet.OK
+          );
+        }
+        // 旧値がそのまま有効な場合は値を残す（clearContent しない）
+      }
+    }
+
+    // _cache はすでに新カテゴリで保存済み（getProductInfoFromUrl の自動保存）
+    Logger.log('[Spec] カテゴリ更新完了: ' + newCategoryId);
+    SpreadsheetApp.getActiveSpreadsheet().toast(
+      'カテゴリを更新しました（' + newCategoryId + ' / ' + newCategoryName + '）',
+      '✅ 完了', 3
+    );
+
+  } else {
+    // ── NO: シートのカテゴリはそのまま、_cache を既存カテゴリ+新スペックで上書き ──
+    saveCacheEntry(specUrl, {
+      category: {
+        categoryId:   existingCategoryId,
+        categoryName: existingCategoryName
+      },
+      specifics: newSpecifics
+    });
+    Logger.log('[Spec] カテゴリ変更なし、スペックのみキャッシュ保存: ' + specUrl);
+    SpreadsheetApp.getActiveSpreadsheet().toast(
+      'スペックをキャッシュに保存しました（カテゴリ変更なし）',
+      '✅ 完了', 3
+    );
   }
 }
 
