@@ -444,7 +444,23 @@ function checkConfig() {
  *     シンプルトリガーとして動作しないようにしています（二重実行防止）。
  */
 function handleEdit(e) {
+  // ロック取得（二重実行防止）
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(0)) {
+    Logger.log('他の処理が実行中のためスキップ');
+    return;
+  }
   try {
+    // デバウンス（5秒以内の再実行スキップ）
+    const props = PropertiesService.getScriptProperties();
+    const lastRun = Number(props.getProperty('HANDLE_EDIT_LAST_RUN') || 0);
+    const now = Date.now();
+    if (now - lastRun < 5000) {
+      Logger.log('デバウンス: 前回から5秒未満のためスキップ');
+      return;
+    }
+    props.setProperty('HANDLE_EDIT_LAST_RUN', String(now));
+
     // デバッグログ: onEditが呼ばれたことを記録
     Logger.log('=== onEdit トリガー発火 ===');
 
@@ -519,6 +535,8 @@ function handleEdit(e) {
     Logger.log('❌ onEditエラー: ' + error.toString());
     Logger.log('スタックトレース: ' + error.stack);
     // エラーが発生しても処理を中断しない（他の編集操作に影響を与えないため）
+  } finally {
+    lock.releaseLock();
   }
 }
 
@@ -533,8 +551,10 @@ function fetchCategoryFromUrl(url, sheet) {
     // 処理中メッセージを表示
     SpreadsheetApp.getActiveSpreadsheet().toast('カテゴリ情報を取得中...', 'eBay API', 3);
 
-    // eBay APIから商品情報を取得
+    // eBay APIから商品情報を取得（キャッシュミス時は _cache に自動保存）
     const productInfo = getProductInfoFromUrl(url);
+    // Item URL の _cache へ明示的に保存（キャッシュヒット時も含めて確実に保存）
+    saveCacheEntry(url, productInfo);
 
     // カテゴリ情報を取得
     const categoryId = productInfo.category.categoryId || '';

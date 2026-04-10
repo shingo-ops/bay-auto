@@ -13,10 +13,189 @@
  * 7. 保存
  *
  * 図形ボタンに割り当てる関数:
- * - setupEbayManager: 初回セットアップ
+ * - authorizeScript: 権限承認 + onEdit トリガー登録（初回セットアップ時に実行）
+ * - setupEbayManager: eBay API セットアップ
  * - menuGetPolicies: ポリシー取得
  * - menuSyncPolicies: ポリシー更新
  */
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 編集トリガー
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/**
+ * 【インストール済みトリガー】handleEdit
+ *
+ * 出品シートの編集時に自動呼び出しされる。
+ * setupOnEditTrigger() で登録すること。
+ *
+ * ・カテゴリID 列が変更された場合
+ *     → 確認ダイアログを表示し、YES なら EbayLib.applyCategoryChange() を実行
+ * ・それ以外の列
+ *     → EbayLib.processOnEdit() に委譲（タイトル文字数更新など）
+ *
+ * @param {GoogleAppsScript.Events.SheetsOnEdit} e
+ */
+function handleEdit(e) {
+  try {
+    if (!e || !e.range) return;
+
+    const range     = e.range;
+    const sheet     = range.getSheet();
+    const sheetName = sheet.getName();
+    const row       = range.getRow();
+    const col       = range.getColumn();
+
+    // 出品シート以外は無視
+    if (sheetName !== '出品') return;
+
+    // ヘッダー行（3行目まで）は無視
+    if (row <= 3) return;
+
+    const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+
+    // カテゴリID 列の変更かどうかを確認
+    const categoryIdCol = EbayLib.getCategoryIdColumnNumber(spreadsheetId);
+
+    if (categoryIdCol && col === categoryIdCol) {
+      _handleCategoryIdChange(e, spreadsheetId, sheetName, row);
+    } else {
+      // 他の列は既存処理（タイトル文字数更新など）に委譲
+      EbayLib.processOnEdit(e, spreadsheetId);
+    }
+
+  } catch (error) {
+    Logger.log('handleEdit エラー: ' + error.toString());
+    try {
+      SpreadsheetApp.getUi().alert(
+        'エラー',
+        '❌ 編集処理中にエラーが発生しました:\n' + error.toString(),
+        SpreadsheetApp.getUi().ButtonSet.OK
+      );
+    } catch (uiError) {
+      // UI 表示自体が失敗した場合は握り潰す
+    }
+  }
+}
+
+/**
+ * カテゴリID 列変更時の処理（handleEdit から呼び出す）
+ *
+ * @param {GoogleAppsScript.Events.SheetsOnEdit} e
+ * @param {string} spreadsheetId
+ * @param {string} sheetName
+ * @param {number} row
+ */
+function _handleCategoryIdChange(e, spreadsheetId, sheetName, row) {
+  const newCategoryId = String(e.value     !== undefined ? e.value     : '').trim();
+  const oldCategoryId = String(e.oldValue  !== undefined ? e.oldValue  : '').trim();
+
+  // 値が変わっていなければスキップ
+  if (newCategoryId === oldCategoryId) return;
+
+  const oldCategoryName = EbayLib.getCategoryNameById(spreadsheetId, oldCategoryId)
+    || (oldCategoryId ? oldCategoryId : '（なし）');
+  const newCategoryName = EbayLib.getCategoryNameById(spreadsheetId, newCategoryId)
+    || (newCategoryId ? newCategoryId : '（不明）');
+
+  const ui = SpreadsheetApp.getUi();
+
+  // 4-1. 確認ポップアップ
+  const response = ui.alert(
+    'カテゴリ変更確認',
+    '現在: ' + oldCategoryId + ' (' + oldCategoryName + ')\n' +
+    '変更先: ' + newCategoryId + ' (' + newCategoryName + ')\n\n' +
+    'カテゴリを変更するとスペック情報が初期化されます。\n変更しますか？',
+    ui.ButtonSet.YES_NO
+  );
+
+  if (response === ui.Button.YES) {
+    // 4-2. YES: カテゴリ変更処理を実行
+    const result = EbayLib.applyCategoryChange(spreadsheetId, sheetName, row, newCategoryId);
+
+    // コンディション値が新カテゴリと非互換の場合は通知
+    if (result && result.conditionIncompatible) {
+      ui.alert(
+        'コンディション再選択',
+        '選択されていた「' + result.oldConditionValue + '」は新しいカテゴリでは使用できません。\n' +
+        'プルダウンから再度選択してください。',
+        ui.ButtonSet.OK
+      );
+    }
+
+  } else {
+    // 4-3. NO: category_id 列を元の値に戻す
+    EbayLib.revertCategoryId(spreadsheetId, sheetName, row, oldCategoryId);
+  }
+}
+
+/**
+ * 【権限承認 + onEdit トリガー登録】
+ *
+ * 初回セットアップ時に実行する。図形ボタンに割り当て可。
+ * - スプレッドシート / ドライブ / 外部URL の権限を一括承認
+ * - handleEdit トリガーを登録（既存トリガーがある場合はスキップ）
+ */
+function authorizeScript() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    // ── 権限承認 ──────────────────────────────────────
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+    sheet.getRange('A1').getValue(); // スプレッドシート権限
+
+    const folders = DriveApp.getFolders(); // ドライブ権限
+    if (folders.hasNext()) { folders.next(); }
+
+    UrlFetchApp.fetch('https://www.google.com', { muteHttpExceptions: true }); // 外部URL権限
+
+    // ── onEdit トリガー登録（重複チェック付き）───────
+    const triggerRegistered = setupOnEditTrigger();
+
+    ui.alert(
+      '権限承認完了',
+      '✅ すべての権限が正常に承認されました。\n\n' +
+      (triggerRegistered
+        ? '✅ handleEdit トリガーを新規登録しました。'
+        : 'ℹ️ handleEdit トリガーはすでに登録済みのためスキップしました。'),
+      ui.ButtonSet.OK
+    );
+    Logger.log('✅ authorizeScript 完了');
+
+  } catch (error) {
+    ui.alert('エラー', '❌ 権限承認中にエラーが発生しました:\n' + error.toString(), ui.ButtonSet.OK);
+    Logger.log('❌ authorizeScript エラー: ' + error.toString());
+  }
+}
+
+/**
+ * 【handleEdit トリガー登録】
+ *
+ * handleEdit トリガーが未登録の場合のみ新規作成する（重複登録防止）。
+ * 図形ボタンに割り当て可。authorizeScript からも呼び出される。
+ *
+ * @returns {boolean} true = 新規登録した / false = 既存トリガーがあったためスキップ
+ */
+function setupOnEditTrigger() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // 既存の handleEdit トリガーを確認（getUserTriggers で現ユーザー分のみ検索）
+  const existing = ScriptApp.getUserTriggers(ss).filter(function(t) {
+    return t.getHandlerFunction() === 'handleEdit';
+  });
+
+  if (existing.length > 0) {
+    Logger.log('handleEdit トリガーは既に登録済みのためスキップ（' + existing.length + '件）');
+    return false;
+  }
+
+  ScriptApp.newTrigger('handleEdit')
+    .forSpreadsheet(ss)
+    .onEdit()
+    .create();
+
+  Logger.log('✅ handleEdit トリガーを新規登録しました');
+  return true;
+}
 
 
 /**

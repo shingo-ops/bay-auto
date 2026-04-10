@@ -226,6 +226,38 @@ function setConditionDropdown(categoryId, sheet) {
 }
 
 /**
+ * カテゴリIDに対応するコンディション DataValidation ルールを構築して返す
+ * リサーチシート・出品シート共通で使用
+ *
+ * @param {string} categoryId
+ * @returns {DataValidation|null} ルール（カテゴリ未登録・マスタ未設定時は null）
+ */
+function buildConditionValidationRule(categoryId) {
+  if (!categoryId || String(categoryId).trim() === '') return null;
+
+  const categoryMasterSs = openCategoryMasterSs();
+  if (!categoryMasterSs) return null;
+
+  const group = getConditionGroupForCategory(categoryMasterSs, String(categoryId));
+  if (!group) {
+    Logger.log('[buildConditionValidationRule] グループ未登録: ' + categoryId);
+    return null;
+  }
+
+  const jaMap = getJaMapForGroup(categoryMasterSs, group);
+  if (!jaMap || Object.keys(jaMap).length === 0) return null;
+
+  const displayOptions = Object.values(jaMap).filter(function(v) { return v && v.trim() !== ''; });
+  if (displayOptions.length === 0) return null;
+
+  Logger.log('[buildConditionValidationRule] カテゴリ=' + categoryId + ' グループ=' + group + ' 選択肢=' + displayOptions.length + '件');
+  return SpreadsheetApp.newDataValidation()
+    .requireValueInList(displayOptions, true)
+    .setAllowInvalid(false)
+    .build();
+}
+
+/**
  * ja_display から condition_id を逆引き（出品データ転記時に呼び出す）
  *
  * カテゴリIDからcondition_groupを特定し、

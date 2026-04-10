@@ -234,43 +234,6 @@ function handleConditionChange(sheet, row, jaDisplay) {
 }
 
 /**
- * onEdit ハンドラ
- * - C列変更 → D列ドロップダウン（ja_display）を更新、E列をクリア
- * - D列変更 → E列に condition_id（数値）を自動入力
- *
- * @param {Event} e - onEdit イベントオブジェクト
- */
-function processOnEdit(e) {
-  try {
-    const range = e.range;
-    const sheet = range.getSheet();
-    const row   = range.getRow();
-    const col   = range.getColumn();
-
-    if (row === 1) return; // ヘッダー行は無視
-
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-
-    if (col === CATEGORY_COLUMN) {
-      handleCategoryChange(ss, sheet, row, range.getValue());
-    } else if (col === CONDITION_COLUMN) {
-      handleConditionChange(sheet, row, range.getValue());
-    }
-  } catch (error) {
-    Logger.log('processOnEdit エラー: ' + error.toString());
-  }
-}
-
-/**
- * グローバル onEdit トリガー
- *
- * @param {Event} e - onEdit イベントオブジェクト
- */
-function onEdit(e) {
-  processOnEdit(e);
-}
-
-/**
  * テスト用: カテゴリIDから Condition 表示リストを確認
  */
 function testGetConditionsByCategoryId() {

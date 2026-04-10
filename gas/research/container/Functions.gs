@@ -668,6 +668,20 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
     // データを転記
     listingSheet.getRange(newRow, 1, 1, transferData.length).setValues([transferData]);
 
+    // 出品シートのコンディション列にプルダウンを設定（選択済み値はsetValuesで転記済み）
+    const conditionColNum = getColumnByHeader(headerMapping, LISTING_COLUMNS.CONDITION.header);
+    if (conditionColNum) {
+      try {
+        const conditionRule = buildConditionValidationRule(String(specInfo.category.categoryId || ''));
+        if (conditionRule) {
+          listingSheet.getRange(newRow, conditionColNum).setDataValidation(conditionRule);
+          Logger.log('✅ 出品シートのコンディション列にプルダウン設定完了: カテゴリID=' + specInfo.category.categoryId);
+        }
+      } catch (dropdownErr) {
+        Logger.log('⚠️ コンディションプルダウン設定失敗（無視）: ' + dropdownErr.toString());
+      }
+    }
+
     // Item Specificsの項目名に色を設定
     Logger.log('色設定開始: ' + specColors.length + '個');
     specColors.forEach(function(colorInfo, index) {
