@@ -206,6 +206,130 @@ function getItemGroupData(itemGroupId) {
 }
 
 /**
+ * カテゴリIDから利用可能なCondition（状態）のリストを取得
+ *
+ * eBay Metadata APIを使用してカテゴリごとの利用可能なCondition値を取得
+ *
+ * @param {string} categoryId カテゴリID
+ * @returns {Array<string>} 利用可能なConditionのリスト
+ */
+function getCategoryConditions(categoryId) {
+  try {
+    Logger.log('=== カテゴリCondition取得開始 ===');
+    Logger.log('カテゴリID: ' + categoryId);
+
+    if (!categoryId) {
+      Logger.log('⚠️ カテゴリIDが空です');
+      return [];
+    }
+
+    const config = getEbayConfig();
+    const token = getOAuthToken();
+
+    // Metadata API の getItemConditionPolicies エンドポイント
+    // https://developer.ebay.com/api-docs/sell/metadata/resources/marketplace/methods/getItemConditionPolicies
+    const apiUrl = 'https://api.ebay.com/sell/metadata/v1/marketplace/EBAY_US/item_condition_policy?filter=categoryIds:{' + categoryId + '}';
+
+    const options = {
+      method: 'get',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      muteHttpExceptions: true
+    };
+
+    Logger.log('Metadata API呼び出し: ' + apiUrl);
+
+    const response = UrlFetchApp.fetch(apiUrl, options);
+    const statusCode = response.getResponseCode();
+    const responseText = response.getContentText();
+
+    if (statusCode !== 200) {
+      Logger.log('❌ Metadata APIエラー: ' + statusCode + ' - ' + responseText);
+      // エラーの場合はデフォルトのConditionリストを返す
+      return getDefaultConditions();
+    }
+
+    const data = JSON.parse(responseText);
+    Logger.log('Metadata API レスポンス取得成功');
+    Logger.log('レスポンス構造: ' + JSON.stringify(data).substring(0, 500) + '...');
+
+    // itemConditionPolicies配列から利用可能なConditionを抽出
+    const conditions = [];
+
+    if (data.itemConditionPolicies && data.itemConditionPolicies.length > 0) {
+      Logger.log('itemConditionPolicies数: ' + data.itemConditionPolicies.length);
+      const policy = data.itemConditionPolicies[0];
+      Logger.log('policy構造: ' + JSON.stringify(policy).substring(0, 300) + '...');
+
+      if (policy.itemConditions && Array.isArray(policy.itemConditions)) {
+        Logger.log('itemConditions数: ' + policy.itemConditions.length);
+        for (let i = 0; i < policy.itemConditions.length; i++) {
+          const condition = policy.itemConditions[i];
+          Logger.log('  condition[' + i + ']: ' + JSON.stringify(condition));
+          if (condition.conditionId) {
+            conditions.push(condition.conditionId);
+            Logger.log('    → 追加: ' + condition.conditionId);
+          }
+        }
+      } else {
+        Logger.log('⚠️ policy.itemConditionsが存在しないか配列ではありません');
+      }
+    } else {
+      Logger.log('⚠️ data.itemConditionPoliciesが存在しないか空です');
+      Logger.log('data keys: ' + Object.keys(data).join(', '));
+    }
+
+    if (conditions.length === 0) {
+      Logger.log('⚠️ Conditionが取得できませんでした。デフォルトを使用します。');
+      return getDefaultConditions();
+    }
+
+    Logger.log('✅ Condition取得成功: ' + conditions.length + '件');
+    Logger.log('Conditions: ' + JSON.stringify(conditions));
+    Logger.log('=== カテゴリCondition取得完了 ===');
+
+    return conditions;
+
+  } catch (error) {
+    Logger.log('❌ getCategoryConditionsエラー: ' + error.toString());
+    if (error.stack) {
+      Logger.log('スタックトレース: ' + error.stack);
+    }
+    // エラーの場合はデフォルトを返す
+    return getDefaultConditions();
+  }
+}
+
+/**
+ * デフォルトのConditionリストを返す
+ *
+ * eBay APIでConditionが取得できない場合のフォールバック
+ *
+ * @returns {Array<string>} デフォルトのConditionリスト
+ */
+function getDefaultConditions() {
+  return [
+    'NEW',
+    'NEW_OTHER',
+    'NEW_WITH_DEFECTS',
+    'MANUFACTURER_REFURBISHED',
+    'CERTIFIED_REFURBISHED',
+    'EXCELLENT_REFURBISHED',
+    'VERY_GOOD_REFURBISHED',
+    'GOOD_REFURBISHED',
+    'SELLER_REFURBISHED',
+    'LIKE_NEW',
+    'USED_EXCELLENT',
+    'USED_VERY_GOOD',
+    'USED_GOOD',
+    'USED_ACCEPTABLE',
+    'FOR_PARTS_OR_NOT_WORKING'
+  ];
+}
+
+/**
  * 商品情報からカテゴリ情報を抽出
  *
  * @param {Object} item eBay商品情報
@@ -364,46 +488,33 @@ function getCategoryMasterData(categoryId) {
       return null;
     }
 
+    // カテゴリIDで検索（A列）
     const lastRow = sheet.getLastRow();
-    const lastCol = sheet.getLastColumn();
+    const categoryIds = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
 
-    // ヘッダー行を取得してインデックスを解決
-    const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-    const colIdx = {
-      categoryId:          headers.indexOf('category_id'),
-      categoryName:        headers.indexOf('category_name'),
-      requiredSpecsJson:   headers.indexOf('required_specs_json'),
-      recommendedSpecsJson: headers.indexOf('recommended_specs_json'),
-      optionalSpecsJson:   headers.indexOf('optional_specs_json')
-    };
-
-    if (colIdx.categoryId === -1) {
-      Logger.log('category_master に category_id 列が見つかりません');
-      return null;
-    }
-
-    // カテゴリIDで検索
-    const allData = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
-    let rowData = null;
-    for (let i = 0; i < allData.length; i++) {
+    let targetRow = -1;
+    for (let i = 0; i < categoryIds.length; i++) {
       // カテゴリIDは文字列で保存されている可能性があるため、文字列比較
-      if (allData[i][colIdx.categoryId].toString() === categoryId.toString()) {
-        rowData = allData[i];
+      if (categoryIds[i][0].toString() === categoryId.toString()) {
+        targetRow = i + 2; // ヘッダー行を考慮
         break;
       }
     }
 
-    if (!rowData) {
+    if (targetRow === -1) {
       Logger.log('カテゴリID ' + categoryId + ' がカテゴリマスタに見つかりません');
       return null;
     }
 
+    // カテゴリデータを取得
+    const rowData = sheet.getRange(targetRow, 1, 1, 7).getValues()[0];
+
     const categoryData = {
-      categoryId:        rowData[colIdx.categoryId],
-      categoryName:      colIdx.categoryName !== -1      ? rowData[colIdx.categoryName] : '',
-      requiredAspects:   colIdx.requiredSpecsJson !== -1   ? JSON.parse(rowData[colIdx.requiredSpecsJson]    || '[]') : [],
-      recommendedAspects: colIdx.recommendedSpecsJson !== -1 ? JSON.parse(rowData[colIdx.recommendedSpecsJson] || '[]') : [],
-      optionalAspects:   colIdx.optionalSpecsJson !== -1   ? JSON.parse(rowData[colIdx.optionalSpecsJson]   || '[]') : []
+      categoryId: rowData[0],
+      categoryName: rowData[1],
+      requiredAspects: JSON.parse(rowData[3] || '[]'),
+      recommendedAspects: JSON.parse(rowData[4] || '[]'),
+      optionalAspects: JSON.parse(rowData[5] || '[]')
     };
 
     Logger.log('カテゴリマスタデータ取得: ' + categoryData.categoryName);

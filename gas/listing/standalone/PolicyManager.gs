@@ -219,55 +219,49 @@ function exportPoliciesToSheet(spreadsheetId) {
         Logger.log('2行目以降のデータをクリアしました（書式・データ検証保持）');
       }
 
-      // ヘッダーが存在するか確認（念のため）
-      const existingHeaders = policySheet.getRange(1, 1, 1, headers.length).getValues()[0];
-      const headersMatch = existingHeaders.every(function(val, index) {
-        return val === headers[index];
-      });
-
-      if (!headersMatch) {
-        Logger.log('⚠️ ヘッダーが定義と異なります。更新します。');
-        policySheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-        policySheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
-      }
+      // ヘッダー行を強制的に正しい順序に更新
+      Logger.log('ヘッダー行を正しい順序に更新します');
+      policySheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      policySheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
     }
 
-    // データ行を作成（デフォルト操作は"-"）
+    // データ行を作成（固定順序）
+    // 順序: 操作, ポリシータイプ, ポリシー名, 説明, マーケットプレイス, ポリシーID
     const rows = [];
 
     // Fulfillment Policy
     fulfillmentPolicies.forEach(function(policy) {
       rows.push([
-        '-',  // デフォルト: 操作不要
-        'Fulfillment Policy',
-        policy.name,
-        policy.policyId,
-        policy.marketplaceId,
-        policy.description
+        '-',                    // 1. 操作
+        'Fulfillment Policy',   // 2. ポリシータイプ
+        policy.name,            // 3. ポリシー名
+        policy.description,     // 4. 説明
+        policy.marketplaceId,   // 5. マーケットプレイス
+        policy.policyId         // 6. ポリシーID
       ]);
     });
 
     // Return Policy
     returnPolicies.forEach(function(policy) {
       rows.push([
-        '-',  // デフォルト: 操作不要
-        'Return Policy',
-        policy.name,
-        policy.policyId,
-        policy.marketplaceId,
-        policy.description
+        '-',                    // 1. 操作
+        'Return Policy',        // 2. ポリシータイプ
+        policy.name,            // 3. ポリシー名
+        policy.description,     // 4. 説明
+        policy.marketplaceId,   // 5. マーケットプレイス
+        policy.policyId         // 6. ポリシーID
       ]);
     });
 
     // Payment Policy
     paymentPolicies.forEach(function(policy) {
       rows.push([
-        '-',  // デフォルト: 操作不要
-        'Payment Policy',
-        policy.name,
-        policy.policyId,
-        policy.marketplaceId,
-        policy.description
+        '-',                    // 1. 操作
+        'Payment Policy',       // 2. ポリシータイプ
+        policy.name,            // 3. ポリシー名
+        policy.description,     // 4. 説明
+        policy.marketplaceId,   // 5. マーケットプレイス
+        policy.policyId         // 6. ポリシーID
       ]);
     });
 
@@ -281,6 +275,7 @@ function exportPoliciesToSheet(spreadsheetId) {
       Logger.log('データを2行目から書き込みました（' + rows.length + '行）');
       Logger.log('✅ プルダウン設定（データ入力規則）は自動的に保持されます');
       Logger.log('✅ 列幅は既存の設定が保持されます');
+      Logger.log('✅ 列の順序: ' + headers.join(' | '));
     }
 
     Logger.log('');
@@ -322,13 +317,16 @@ function getPolicyIdByName(policyName, policyType) {
       return null;
     }
 
+    // 列マッピングを取得（ヘッダー名でマッピング）
+    const columnMap = getPolicySheetColumnMap(policySheet);
+
     const data = policySheet.getDataRange().getValues();
 
     // ヘッダー行をスキップして検索
     for (let i = 1; i < data.length; i++) {
-      const rowPolicyType = data[i][0];
-      const rowPolicyName = data[i][1];
-      const rowPolicyId = data[i][2];
+      const rowPolicyType = data[i][columnMap.POLICY_TYPE - 1];
+      const rowPolicyName = data[i][columnMap.POLICY_NAME - 1];
+      const rowPolicyId = data[i][columnMap.POLICY_ID - 1];
 
       if (rowPolicyType === policyType && rowPolicyName === policyName) {
         Logger.log('ポリシーID検索: ' + policyName + ' → ' + rowPolicyId);
@@ -521,3 +519,4 @@ function applyDataValidationsToNewRows(sheet, templateRow, targetStartRow, targe
     // エラーが発生しても処理を続行
   }
 }
+

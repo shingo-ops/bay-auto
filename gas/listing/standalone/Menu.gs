@@ -113,6 +113,86 @@ function menuSyncPolicies(spreadsheetId) {
 }
 
 /**
+ * 【出品実行】
+ * "出品"シートの選択行を出品
+ *
+ * @param {string} spreadsheetId スプレッドシートID（省略時はデフォルト使用）
+ * @param {number} rowNumber 出品する行番号（4行目以降）
+ * @returns {Object} { success: boolean, result?: Object, error?: string, message?: string }
+ */
+function menuCreateListing(spreadsheetId, rowNumber) {
+  try {
+    // スプレッドシートIDを設定
+    if (spreadsheetId) {
+      CURRENT_SPREADSHEET_ID = spreadsheetId;
+    }
+
+    Logger.log('=== 出品実行: 行' + rowNumber + ' ===');
+
+    // トークン自動更新（必要に応じて）
+    autoRefreshTokenIfNeeded(spreadsheetId);
+
+    // 出品実行
+    const result = createListing(spreadsheetId, rowNumber);
+
+    Logger.log('✅ 出品完了');
+    Logger.log('- SKU: ' + result.sku);
+    Logger.log('- Item ID: ' + result.itemId);
+    Logger.log('- 転記: ' + (result.transferred ? '成功' : 'スキップ'));
+    Logger.log('- 行処理: ' + (result.rowCleared ? 'クリア・移動完了' : 'スキップ'));
+
+    let message = '✅ 出品が完了しました（Trading API）\n\n' +
+                  'SKU: ' + result.sku + '\n' +
+                  'Item ID: ' + result.itemId + '\n\n';
+
+    // Promoted Listing結果を追加
+    if (result.promotedListing) {
+      if (result.promotedListing.success) {
+        message += '✅ Promoted Listing設定完了\n';
+        if (result.promotedListing.adId) {
+          message += 'Ad ID: ' + result.promotedListing.adId + '\n';
+        }
+        message += '\n';
+      } else {
+        message += '⚠️ Promoted Listing設定失敗\n' +
+                   result.promotedListing.error + '\n\n';
+      }
+    }
+
+    // 転記・行処理結果を追加
+    if (result.transferred) {
+      message += '✅ 出品DBに転記しました\n';
+      if (result.rowCleared) {
+        message += '✅ データをクリアして行を最下部に移動しました\n';
+        message += '   （数式・入力規則は維持されています）\n';
+      }
+      message += '\n';
+    } else {
+      message += '⚠️ 出品DB転記をスキップしました\n' +
+                 '（"ツール設定"シートの"出品DB"を設定すると自動転記されます）\n\n';
+    }
+
+    message += 'Seller Hubで編集・管理が可能です';
+
+    return {
+      success: true,
+      result: result,
+      message: message
+    };
+
+  } catch (error) {
+    Logger.log('❌ 出品エラー: ' + error.toString());
+    return {
+      success: false,
+      error: error.toString(),
+      message: '❌ 出品エラー:\n\n' + error.toString()
+    };
+  } finally {
+    CURRENT_SPREADSHEET_ID = null;
+  }
+}
+
+/**
  * 設定確認（ログ出力）
  *
  * @param {string} spreadsheetId スプレッドシートID（省略時はデフォルト使用）

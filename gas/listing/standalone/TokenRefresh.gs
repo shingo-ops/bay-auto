@@ -32,11 +32,21 @@ function refreshEbayAccessToken(spreadsheetId) {
     // Basic認証ヘッダー作成（App ID:Cert ID を Base64エンコード）
     const credentials = Utilities.base64Encode(config.appId + ':' + config.certId);
 
-    // リクエストボディ
+    // リクエストボディ（InitialOAuth.gsと同じscopeを使用）
+    const scopes = [
+      'https://api.ebay.com/oauth/api_scope',
+      'https://api.ebay.com/oauth/api_scope/sell.account',
+      'https://api.ebay.com/oauth/api_scope/sell.inventory',
+      'https://api.ebay.com/oauth/api_scope/sell.fulfillment',
+      'https://api.ebay.com/oauth/api_scope/sell.marketing',
+      'https://api.ebay.com/oauth/api_scope/sell.analytics.readonly',
+      'https://api.ebay.com/oauth/api_scope/sell.finances'
+    ].join(' ');
+
     const payload = {
       'grant_type': 'refresh_token',
       'refresh_token': config.refreshToken,
-      'scope': 'https://api.ebay.com/oauth/api_scope https://api.ebay.com/oauth/api_scope/sell.account'
+      'scope': scopes
     };
 
     // HTTPリクエスト設定
@@ -126,8 +136,8 @@ function updateTokenInSheet(accessToken, expiryDate) {
       }
 
       if (key === 'Token Expiry') {
-        settingsSheet.getRange(i + 1, 2).setValue(expiryDate.toLocaleString('ja-JP'));
-        Logger.log('Token Expiry更新: 行' + (i + 1));
+        settingsSheet.getRange(i + 1, 2).setValue(expiryDate.toISOString());
+        Logger.log('Token Expiry更新（ISO 8601形式）: 行' + (i + 1) + ' = ' + expiryDate.toISOString());
       }
     }
 
@@ -141,10 +151,16 @@ function updateTokenInSheet(accessToken, expiryDate) {
 /**
  * トークンの有効期限をチェック
  *
+ * @param {string} spreadsheetId スプレッドシートID
  * @returns {boolean} 期限切れならtrue
  */
-function isTokenExpired() {
+function isTokenExpired(spreadsheetId) {
   try {
+    // スプレッドシートIDを設定
+    if (spreadsheetId) {
+      CURRENT_SPREADSHEET_ID = spreadsheetId;
+    }
+
     const config = getConfig();
     const expiryStr = config['Token Expiry'];
 
@@ -154,6 +170,14 @@ function isTokenExpired() {
     }
 
     const expiryDate = new Date(expiryStr);
+
+    // パース失敗チェック
+    if (isNaN(expiryDate.getTime())) {
+      Logger.log('⚠️ Token Expiryのパースに失敗: ' + expiryStr);
+      Logger.log('→ 期限切れとして扱います（再認証が必要）');
+      return true; // 期限切れとして扱う
+    }
+
     const now = new Date();
 
     // 5分前に期限切れとして扱う（余裕を持たせる）
@@ -171,6 +195,8 @@ function isTokenExpired() {
   } catch (error) {
     Logger.log('⚠️ 期限チェックエラー: ' + error.toString());
     return true; // エラー時は期限切れとして扱う
+  } finally {
+    CURRENT_SPREADSHEET_ID = null;
   }
 }
 
@@ -181,7 +207,7 @@ function isTokenExpired() {
  * @returns {boolean} 更新が必要だった場合true
  */
 function autoRefreshTokenIfNeeded(spreadsheetId) {
-  if (isTokenExpired()) {
+  if (isTokenExpired(spreadsheetId)) {
     Logger.log('トークンの自動更新を開始します...');
     const result = refreshEbayAccessToken(spreadsheetId);
 
@@ -195,4 +221,85 @@ function autoRefreshTokenIfNeeded(spreadsheetId) {
   }
 
   return false; // 更新不要だった
+}
+
+/**
+ * デバッグ用: トークン状態を確認
+ *
+ * @param {string} spreadsheetId スプレッドシートID
+ */
+function debugTokenStatus(spreadsheetId) {
+  try {
+    if (spreadsheetId) {
+      CURRENT_SPREADSHEET_ID = spreadsheetId;
+    }
+
+    const config = getConfig();
+    const expiryStr = config['Token Expiry'];
+    const userToken = config['User Token'];
+    const refreshToken = config['Refresh Token'];
+
+    Logger.log('=== トークン状態確認 ===');
+    Logger.log('');
+
+    // User Token
+    if (userToken) {
+      Logger.log('✅ User Token: ' + userToken.substring(0, 30) + '...');
+    } else {
+      Logger.log('❌ User Token: 未設定');
+    }
+
+    // Refresh Token
+    if (refreshToken) {
+      Logger.log('✅ Refresh Token: ' + refreshToken.substring(0, 30) + '...');
+    } else {
+      Logger.log('❌ Refresh Token: 未設定');
+    }
+
+    // Token Expiry
+    Logger.log('');
+    Logger.log('Token Expiry（保存値）: ' + (expiryStr || '未設定'));
+
+    if (expiryStr) {
+      const expiryDate = new Date(expiryStr);
+
+      if (isNaN(expiryDate.getTime())) {
+        Logger.log('❌ Token Expiryのパースに失敗');
+        Logger.log('   → ISO 8601形式で再保存が必要です');
+      } else {
+        const now = new Date();
+        const diff = expiryDate.getTime() - now.getTime();
+        const diffMinutes = Math.floor(diff / 1000 / 60);
+
+        Logger.log('有効期限: ' + expiryDate.toLocaleString('ja-JP'));
+        Logger.log('現在時刻: ' + now.toLocaleString('ja-JP'));
+        Logger.log('');
+
+        if (diffMinutes > 5) {
+          Logger.log('✅ トークンは有効です（残り ' + diffMinutes + '分）');
+        } else if (diffMinutes > 0) {
+          Logger.log('⚠️ トークンはまもなく期限切れです（残り ' + diffMinutes + '分）');
+        } else {
+          Logger.log('❌ トークンは期限切れです（' + Math.abs(diffMinutes) + '分前に失効）');
+        }
+      }
+    }
+
+    Logger.log('');
+    Logger.log('======================');
+
+    return {
+      hasUserToken: !!userToken,
+      hasRefreshToken: !!refreshToken,
+      hasExpiry: !!expiryStr,
+      expiryStr: expiryStr,
+      isExpired: isTokenExpired(spreadsheetId)
+    };
+
+  } catch (error) {
+    Logger.log('❌ トークン状態確認エラー: ' + error.toString());
+    return null;
+  } finally {
+    CURRENT_SPREADSHEET_ID = null;
+  }
 }

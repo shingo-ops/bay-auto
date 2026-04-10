@@ -4,6 +4,10 @@
  * URL処理、出品データ転記などのメイン機能
  */
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ユーティリティ関数
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 /**
  * 指定列で空白の最初の行を探す
  *
@@ -49,6 +53,72 @@ function findEmptyRowInResearchStaffColumn(sheet) {
 }
 
 /**
+ * タイトルがVEROまたは禁止ワードに該当するかチェック
+ *
+ * @param {string} title タイトル文字列
+ * @param {Spreadsheet} listingSpreadsheet 出品シートのスプレッドシートオブジェクト
+ * @returns {string} "VERO" | "禁止ワード" | ""
+ */
+function checkVeroAndProhibitedWords(title, listingSpreadsheet) {
+  try {
+    if (!title || String(title).trim() === '') {
+      return '';
+    }
+
+    const veroSheet = listingSpreadsheet.getSheetByName('Vero/禁止ワード');
+
+    if (!veroSheet) {
+      Logger.log('⚠️ Vero/禁止ワードシートが見つかりません。ワード判定をスキップします。');
+      return '';
+    }
+
+    const lastRow = veroSheet.getLastRow();
+
+    if (lastRow < 2) {
+      Logger.log('⚠️ Vero/禁止ワードシートにデータがありません。');
+      return '';
+    }
+
+    // A列（VERO）とB列（禁止ワード）のデータを取得（2行目以降）
+    const veroWords = veroSheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    const prohibitedWords = veroSheet.getRange(2, 2, lastRow - 1, 1).getValues();
+
+    const titleLower = String(title).toLowerCase();
+
+    // VEROワードチェック（優先度高）
+    for (let i = 0; i < veroWords.length; i++) {
+      const veroWord = veroWords[i][0];
+      if (veroWord && String(veroWord).trim() !== '') {
+        const veroWordLower = String(veroWord).toLowerCase();
+        if (titleLower.indexOf(veroWordLower) !== -1) {
+          Logger.log('✅ VEROワード検出: ' + veroWord);
+          return 'VERO';
+        }
+      }
+    }
+
+    // 禁止ワードチェック
+    for (let i = 0; i < prohibitedWords.length; i++) {
+      const prohibitedWord = prohibitedWords[i][0];
+      if (prohibitedWord && String(prohibitedWord).trim() !== '') {
+        const prohibitedWordLower = String(prohibitedWord).toLowerCase();
+        if (titleLower.indexOf(prohibitedWordLower) !== -1) {
+          Logger.log('✅ 禁止ワード検出: ' + prohibitedWord);
+          return '禁止ワード';
+        }
+      }
+    }
+
+    // 該当なし
+    return '';
+
+  } catch (error) {
+    Logger.log('❌ ワード判定エラー: ' + error.toString());
+    return '';
+  }
+}
+
+/**
  * 出品シートのヘッダー行からカラムマッピングを構築
  *
  * @param {Sheet} listingSheet 出品シート
@@ -91,8 +161,8 @@ function getColumnByHeader(headerMapping, configHeader) {
 /**
  * 転記データを準備（ヘッダーマッピングベース）
  *
- * @param {Object} itemInfo Item URLから取得した商品情報（タイトル、カテゴリ用）
- * @param {Object} specInfo スペックURLから取得した商品情報（Brand, UPC, EAN, MPN, Item Specifics用）
+ * @param {Object} itemInfo Item URLから取得した商品情報（タイトル用、カテゴリは整合性チェック用）
+ * @param {Object} specInfo スペックURLから取得した商品情報（カテゴリ、Brand, UPC, EAN, MPN, Item Specifics用）
  * @param {Sheet} listingSheet 出品シート
  * @param {Object} headerMapping ヘッダー名→列番号のマッピング
  * @param {Object} policyData ポリシーデータ（任意）
@@ -144,6 +214,39 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
     condition: researchSheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.CONDITION.col).getValue()
   };
 
+  // カテゴリIDの整合性チェック: Item URLとスペックURLのカテゴリIDが異なる場合は警告して中止
+  Logger.log('カテゴリID整合性チェック開始...');
+  if (itemInfo && itemInfo.category && specInfo && specInfo.category) {
+    const itemCategoryId = itemInfo.category.categoryId;
+    const specCategoryId = specInfo.category.categoryId;
+
+    Logger.log('  - Item URLカテゴリID: ' + itemCategoryId);
+    Logger.log('  - スペックURLカテゴリID: ' + specCategoryId);
+
+    if (itemCategoryId && specCategoryId && itemCategoryId !== specCategoryId) {
+      const confirmMsg = '⚠️ カテゴリIDが一致しません。\n\n' +
+                         '【Item URL】\n' +
+                         '  ID: ' + itemCategoryId + '  ' + (itemInfo.category.categoryName || '') + '\n\n' +
+                         '【スペックURL】\n' +
+                         '  ID: ' + specCategoryId + '  ' + (specInfo.category.categoryName || '') + '\n\n' +
+                         'スペックURLのカテゴリ（' + specCategoryId + '）を採用して出品しますか？\n' +
+                         'キャンセルすると転記を中止します。';
+
+      Logger.log('⚠️ カテゴリID不一致: Item=' + itemCategoryId + ' / Spec=' + specCategoryId);
+      const uiForCategory = SpreadsheetApp.getUi();
+      const categoryResponse = uiForCategory.alert('カテゴリID確認', confirmMsg, uiForCategory.ButtonSet.OK_CANCEL);
+      if (categoryResponse !== uiForCategory.Button.OK) {
+        Logger.log('カテゴリID不一致: ユーザーがキャンセルしたため転記を中止');
+        throw new Error('カテゴリID不一致のため転記を中止しました');
+      }
+      Logger.log('✅ スペックURLのカテゴリIDを採用して続行: ' + specCategoryId);
+    }
+
+    Logger.log('✅ カテゴリIDが一致しています: ' + itemCategoryId);
+  } else {
+    Logger.log('⚠️ カテゴリ情報が不完全なため、整合性チェックをスキップします');
+  }
+
   // headerMappingから最大列数を決定
   Logger.log('headerMapping values: ' + JSON.stringify(Object.values(headerMapping).slice(0, 10)));
   const maxCol = Math.max.apply(null, Object.values(headerMapping));
@@ -157,9 +260,16 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
   Logger.log('transferData配列作成完了: length=' + transferData.length);
 
   // ヘッダー名で値を設定するヘルパー関数
-  const setValueByHeader = function(headerName, value) {
+  // optional = true の場合、列が見つからなくてもエラーにせず警告ログのみ出力
+  const setValueByHeader = function(headerName, value, optional) {
     const col = getColumnByHeader(headerMapping, headerName);
     if (!col || col === null || col === undefined) {
+      if (optional === true) {
+        // オプショナル列：列が見つからない場合はスキップ（警告ログのみ）
+        Logger.log('⚠️ オプショナル列「' + headerName + '」が出品シートに存在しないためスキップします');
+        return;
+      }
+      // 必須列：列が見つからない場合はエラー
       const errorMsg = '出品シートのヘッダー行（3行目）に「' + headerName + '」という列名が見つかりませんでした。\n\n' +
                        '出品シートを開いて、3行目に「' + headerName + '」列があるか確認してください。\n' +
                        '※列名の前後に余計なスペースやタブがないかも確認してください。';
@@ -201,29 +311,34 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
   setValueByHeader(LISTING_COLUMNS.PURCHASE_SOURCE_3.header, purchaseSourceName3);
   setValueByHeader(LISTING_COLUMNS.PURCHASE_URL_3.header, priceInfo.purchaseUrl3);
 
-  // リサーチ担当
+  // リサーチ担当（必須）
   setValueByHeader(LISTING_COLUMNS.RESEARCH_STAFF.header, topInfo.staff);
 
-  // 出品担当（空）
-  setValueByHeader(LISTING_COLUMNS.LISTING_STAFF.header, '');
+  // 出品担当（オプショナル）
+  setValueByHeader(LISTING_COLUMNS.LISTING_STAFF.header, '', true);
 
-  // ピックアップ担当（空）
-  setValueByHeader(LISTING_COLUMNS.PICKUP_STAFF.header, '');
+  // ピックアップ担当（オプショナル）
+  setValueByHeader(LISTING_COLUMNS.PICKUP_STAFF.header, '', true);
 
-  // 仕入れ検索担当（空）
-  setValueByHeader(LISTING_COLUMNS.PURCHASE_SEARCH_STAFF.header, '');
+  // 仕入れ検索担当（オプショナル）
+  setValueByHeader(LISTING_COLUMNS.PURCHASE_SEARCH_STAFF.header, '', true);
 
-  // 利益計算担当（空）
-  setValueByHeader(LISTING_COLUMNS.PROFIT_CALC_STAFF.header, '');
+  // 利益計算担当（オプショナル）
+  setValueByHeader(LISTING_COLUMNS.PROFIT_CALC_STAFF.header, '', true);
 
-  // 業務6担当（空）
-  setValueByHeader(LISTING_COLUMNS.TASK6_STAFF.header, '');
+  // 業務6担当（オプショナル）
+  setValueByHeader(LISTING_COLUMNS.TASK6_STAFF.header, '', true);
 
   // タイトル（英語） - Item URLから取得
-  setValueByHeader(LISTING_COLUMNS.TITLE.header, itemInfo.title || '');
+  const title = itemInfo.title || '';
+  setValueByHeader(LISTING_COLUMNS.TITLE.header, title);
+
+  // ワード判定（VERO/禁止ワード）
+  const wordCheckResult = checkVeroAndProhibitedWords(title, listingSheet.getParent());
+  setValueByHeader(LISTING_COLUMNS.WORD_CHECK.header, wordCheckResult, true);
 
   // 文字数（タイトル文字数）
-  setValueByHeader(LISTING_COLUMNS.CHAR_COUNT_1.header, (itemInfo.title || '').length);
+  setValueByHeader(LISTING_COLUMNS.CHAR_COUNT_1.header, title.length);
 
   // 状態
   setValueByHeader(LISTING_COLUMNS.CONDITION.header, itemList.condition);
@@ -239,11 +354,11 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
   // スペックURL
   setValueByHeader(LISTING_COLUMNS.SPEC_URL.header, itemList.specUrl);
 
-  // カテゴリID - Item URLから取得
-  setValueByHeader(LISTING_COLUMNS.CATEGORY_ID.header, itemInfo.category.categoryId);
+  // カテゴリID - スペックURLから取得（Item URLとの整合性チェック済み）
+  setValueByHeader(LISTING_COLUMNS.CATEGORY_ID.header, specInfo.category.categoryId);
 
-  // カテゴリ - Item URLから取得
-  setValueByHeader(LISTING_COLUMNS.CATEGORY_NAME.header, itemInfo.category.categoryName);
+  // カテゴリ - スペックURLから取得（Item URLとの整合性チェック済み）
+  setValueByHeader(LISTING_COLUMNS.CATEGORY_NAME.header, specInfo.category.categoryName);
 
   // Brand - スペックURLから取得、取得できなかった場合は"Does not apply"
   setValueByHeader(LISTING_COLUMNS.BRAND.header, specInfo.specifics['Brand'] || 'Does not apply');
@@ -259,7 +374,7 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
 
   // Item Specifics（項目名1～30、内容1～30）= 60列
   // スペックURLから取得、優先度順にソート（必須 > 推奨 > その他、かつ値あり > 値なし）
-  const sortedSpecs = sortItemSpecificsByPriority(specInfo.specifics, itemInfo.category.categoryId);
+  const sortedSpecs = sortItemSpecificsByPriority(specInfo.specifics, specInfo.category.categoryId);
 
   // Item Specificsの色情報を保存（転記後に色を設定するため）
   const specColors = [];
@@ -331,7 +446,7 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
   setValueByHeader(LISTING_COLUMNS.SELLING_PRICE.header, mainInfo.sellingPrice);
   setValueByHeader(LISTING_COLUMNS.BEST_OFFER.header, mainInfo.bestOffer);
 
-  // 最安値URL
+  // 検索URL
   setValueByHeader(LISTING_COLUMNS.LOWEST_PRICE_URL.header, itemList.lowestPriceUrl);
 
   // 利益情報（ポリシーデータから取得）
@@ -343,10 +458,14 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
   // 画像URL - リサーチシートから取得
   setValueByHeader(LISTING_COLUMNS.IMAGE_URL.header, priceInfo.imageUrl);
 
-  // 画像1～20（空）
-  for (let i = 1; i <= 20; i++) {
+  // 画像1～23（空）
+  for (let i = 1; i <= 23; i++) {
     setValueByHeader(LISTING_COLUMNS['IMAGE_' + i].header, '');
   }
+
+  // ストア画像 - ツール設定から取得
+  const config = getEbayConfig();
+  setValueByHeader(LISTING_COLUMNS.STORE_IMAGE.header, config.storeImageUrl || '');
 
   // 出品タイムスタンプ（記録不要のため空）
   setValueByHeader(LISTING_COLUMNS.LISTING_TIMESTAMP.header, '');
@@ -380,19 +499,19 @@ function onListingButtonPolicy1() {
 }
 
 /**
- * 出品ボタン（Standard用）のクリックハンドラ
+ * 出品ボタン（Economy用）のクリックハンドラ
  * ポリシー2（15行目）のデータでSKUを生成して出品
  */
 function onListingButtonPolicy2() {
   const ui = SpreadsheetApp.getUi();
   const response = ui.alert(
     '出品確認',
-    'Standard shippingで出品しますか？',
+    'Economy shippingで出品しますか？',
     ui.ButtonSet.OK_CANCEL
   );
 
   if (response === ui.Button.OK) {
-    transferListingDataWithPolicy(RESEARCH_POLICY.POLICY_2_ROW, 'Standard');
+    transferListingDataWithPolicy(RESEARCH_POLICY.POLICY_2_ROW, 'Economy');
   } else {
     ui.toast('出品をキャンセルしました', 'eBay 出品', 3);
   }
@@ -423,7 +542,7 @@ function onListingButtonPolicy3() {
  * SKUを先行出力して行を予約してから画像ダウンロードを実行
  *
  * @param {number} policyRow ポリシー行番号（14, 15, 16のいずれか）
- * @param {string} policyLabel ポリシー名（表示用：Expedited, Standard, 書状）
+ * @param {string} policyLabel ポリシー名（表示用：Expedited, Economy, 書状）
  */
 function transferListingDataWithPolicy(policyRow, policyLabel) {
   // エラー時のクリーンアップ用の変数
@@ -478,10 +597,10 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
     // eBay APIから商品情報を取得
     SpreadsheetApp.getActiveSpreadsheet().toast('商品情報を取得中...', 'eBay API (' + policyLabel + ')', 10);
 
-    // Item URLから基本情報を取得（タイトル、カテゴリのみ使用）
+    // Item URLから基本情報を取得（タイトル用、カテゴリは整合性チェック用）
     const itemInfo = getProductInfoFromUrl(itemUrl.toString());
 
-    // スペックURLからスペック情報を取得（Brand, UPC, EAN, MPN, Item Specifics）
+    // スペックURLからスペック情報を取得（カテゴリ、Brand, UPC, EAN, MPN, Item Specifics）
     const specInfo = getProductInfoFromUrl(specUrl.toString());
 
     // 転記先スプレッドシートを開く
@@ -597,7 +716,7 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
           const siteName = getSiteNameFromImageUrl(productPageUrl.toString()); // 商品ページURLからサイト名を判定
 
           // 各画像をダウンロード
-          const savedCount = Math.min(imageUrls.length, 20); // 最大20枚
+          const savedCount = Math.min(imageUrls.length, 23); // 最大23枚
           SpreadsheetApp.getActiveSpreadsheet().toast(savedCount + '枚の画像をダウンロード中...', 'eBay 出品', 5);
 
           for (let i = 0; i < savedCount; i++) {
@@ -610,7 +729,7 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
             const imageResult = downloadAndSaveImage(imageUrl, imageFolderUrl, baseFileName);
 
             if (imageResult.success) {
-              // 画像1～20列に保存したURLを出力
+              // 画像1～23列に保存したURLを出力
               const imageColumnKey = 'IMAGE_' + (i + 1);
               const imageHeaderName = LISTING_COLUMNS[imageColumnKey] ? LISTING_COLUMNS[imageColumnKey].header : null;
 
