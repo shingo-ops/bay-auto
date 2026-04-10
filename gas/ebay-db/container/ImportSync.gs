@@ -706,7 +706,7 @@ function setupHeaders() {
     'marketplace_id', 'category_tree_id', 'category_id', 'category_name',
     'required_specs_json', 'recommended_specs_json', 'optional_specs_json',
     'aspect_values_json', 'aspect_modes_json', 'multi_value_aspects_json',
-    'conditions_json', 'fvf_rate', 'last_synced'
+    'conditions_json', 'fvf_rate', 'fvf_note', 'last_synced'
   ];
 
   var CONDITION_HEADERS = [
@@ -740,4 +740,60 @@ function setupHeaders() {
   results.push('condition_ja_map:OK');
 
   return 'spreadsheetId=' + ss.getId() + ' | ' + results.join(', ');
+}
+
+/**
+ * category_master_EBAY_US のみヘッダー行を14列で上書き（動作確認用）
+ */
+function setupHeadersUS() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) return 'ERROR: getActiveSpreadsheet() returned null';
+
+  var CATEGORY_HEADERS = [
+    'marketplace_id', 'category_tree_id', 'category_id', 'category_name',
+    'required_specs_json', 'recommended_specs_json', 'optional_specs_json',
+    'aspect_values_json', 'aspect_modes_json', 'multi_value_aspects_json',
+    'conditions_json', 'fvf_rate', 'fvf_note', 'last_synced'
+  ];
+
+  var name  = 'category_master_EBAY_US';
+  var sheet = ss.getSheetByName(name) || ss.insertSheet(name);
+  sheet.getRange(1, 1, 1, CATEGORY_HEADERS.length).setValues([CATEGORY_HEADERS]);
+  var headerRange = sheet.getRange(1, 1, 1, CATEGORY_HEADERS.length);
+  headerRange.setBackground('#4285f4');
+  headerRange.setFontColor('#ffffff');
+  headerRange.setFontWeight('bold');
+  sheet.setFrozenRows(1);
+
+  var actual = sheet.getRange(1, 1, 1, CATEGORY_HEADERS.length).getValues()[0];
+  return name + ' ヘッダー設定完了: ' + actual.join(' | ');
+}
+
+/**
+ * サービス提供用ブックの category_master_EBAY_US にも14列ヘッダーを設定
+ */
+function setupHeadersUSServiceBook() {
+  var config = getConfig();
+  var serviceBookId = config['SERVICE_BOOK_ID'];
+  if (!serviceBookId) return 'ERROR: SERVICE_BOOK_ID が未設定';
+
+  var CATEGORY_HEADERS = [
+    'marketplace_id', 'category_tree_id', 'category_id', 'category_name',
+    'required_specs_json', 'recommended_specs_json', 'optional_specs_json',
+    'aspect_values_json', 'aspect_modes_json', 'multi_value_aspects_json',
+    'conditions_json', 'fvf_rate', 'fvf_note', 'last_synced'
+  ];
+
+  var serviceBook = SpreadsheetApp.openById(serviceBookId);
+  var name  = 'category_master_EBAY_US';
+  var sheet = serviceBook.getSheetByName(name) || serviceBook.insertSheet(name);
+  sheet.getRange(1, 1, 1, CATEGORY_HEADERS.length).setValues([CATEGORY_HEADERS]);
+  var headerRange = sheet.getRange(1, 1, 1, CATEGORY_HEADERS.length);
+  headerRange.setBackground('#4285f4');
+  headerRange.setFontColor('#ffffff');
+  headerRange.setFontWeight('bold');
+  sheet.setFrozenRows(1);
+
+  var actual = sheet.getRange(1, 1, 1, CATEGORY_HEADERS.length).getValues()[0];
+  return '[サービスブック] ' + name + ' ヘッダー設定完了: ' + actual.join(' | ');
 }

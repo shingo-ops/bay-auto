@@ -101,7 +101,27 @@ HIGH LIFE JPN（Treasure Island JP）
 | J | multi_value_aspects_json | JSON配列 | Python | ["Color","Features"] |
 | K | conditions_json | JSON配列 | Python | [{"id":"1000","name":"New","enum":"","category_display":"New"}] |
 | L | fvf_rate | 数値 | Gemini | 13.25（%） |
-| M | last_synced | 日付 | Python | 2026-04-10 |
+| M | fvf_note | 文字列 | Gemini | "$7,500超は2.35%" / 段階的料率・例外条件等、補足なしは空文字 |
+| N | last_synced | 日付 | Python | 2026-04-10 |
+
+#### 旧ヘッダーとの対照表（旧 カテゴリマスタ → 新 category_master_EBAY_XX）
+
+| 旧列名 | 新列名 | 状態 |
+|---|---|---|
+| categoryId | category_id | 名前変更 |
+| categoryName | category_name | 名前変更 |
+| categoryTreeVersion | category_tree_id | 概念変更（バージョン文字列→ツリーID整数） |
+| requiredAspects | required_specs_json | 名前変更 |
+| recommendedAspects | recommended_specs_json | 名前変更 |
+| optionalAspects | optional_specs_json | 名前変更 |
+| aspectValues | aspect_values_json | 名前変更 |
+| aspectModes | aspect_modes_json | 名前変更 |
+| multiValueAspects | multi_value_aspects_json | 名前変更 |
+| fvfRate | fvf_rate | 名前変更 |
+| fvfNote | fvf_note | 名前変更・Geminiによる自動抽出に変更 |
+| lastUpdated | last_synced | 名前変更 |
+| —（新規） | marketplace_id | 追加（マルチマーケット対応） |
+| —（新規） | conditions_json | 追加（コンディション情報統合） |
 
 #### データソースと取得API
 

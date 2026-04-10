@@ -63,18 +63,18 @@ def load_json(path: str) -> any:
 
 
 def generate_category_master(rows: list[dict], fvf_rates: dict) -> None:
-    """マーケットプレイスごとに category_master_EBAY_XX.csv を生成（13列）
+    """マーケットプレイスごとに category_master_EBAY_XX.csv を生成（14列）
 
     列定義: marketplace_id, category_tree_id, category_id, category_name,
             required_specs_json, recommended_specs_json, optional_specs_json,
             aspect_values_json, aspect_modes_json, multi_value_aspects_json,
-            conditions_json, fvf_rate, last_synced
+            conditions_json, fvf_rate, fvf_note, last_synced
     """
     fieldnames = [
         "marketplace_id", "category_tree_id", "category_id", "category_name",
         "required_specs_json", "recommended_specs_json", "optional_specs_json",
         "aspect_values_json", "aspect_modes_json", "multi_value_aspects_json",
-        "conditions_json", "fvf_rate", "last_synced",
+        "conditions_json", "fvf_rate", "fvf_note", "last_synced",
     ]
 
     # マーケットプレイスごとに分類
@@ -96,9 +96,11 @@ def generate_category_master(rows: list[dict], fvf_rates: dict) -> None:
 
                 # FVF レートをカテゴリ名で紐付け（部分一致）
                 fvf_rate = ""
-                for key, rate in fvf_map.items():
+                fvf_note = ""
+                for key, info in fvf_map.items():
                     if key.lower() in cat_name.lower() or cat_name.lower() in key.lower():
-                        fvf_rate = rate
+                        fvf_rate = info.get("fvf_rate", "")
+                        fvf_note = info.get("fvf_note", "")
                         break
 
                 writer.writerow({
@@ -114,6 +116,7 @@ def generate_category_master(rows: list[dict], fvf_rates: dict) -> None:
                     "multi_value_aspects_json": row.get("multi_value_aspects_json", "[]"),
                     "conditions_json":          row.get("conditions_json",          "[]"),
                     "fvf_rate":                 fvf_rate,
+                    "fvf_note":                 fvf_note,
                     "last_synced":              TODAY,
                 })
 

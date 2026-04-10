@@ -25,13 +25,21 @@ def fetch_fvf_page(url: str) -> str:
 
 
 def extract_fvf_with_gemini(html: str, marketplace_id: str) -> dict:
-    """Gemini 2.5 Flash-Lite で HTML からカテゴリ別 FVF レートを抽出"""
+    """Gemini 2.5 Flash-Lite で HTML からカテゴリ別 FVF レートを抽出
+
+    戻り値: { category_name: {"fvf_rate": float, "fvf_note": str} }
+    fvf_note は段階的料率・例外条件など補足情報（例: "$150以上は8%"）。
+    シンプルな固定料率のカテゴリは空文字。
+    """
     api_key = os.environ["GEMINI_API_KEY"]
 
     prompt = (
         f"以下は eBay ({marketplace_id}) の販売手数料ページの HTML です。\n"
-        "カテゴリ名と最終価値手数料(FVF)率(%)のリストを JSON 配列で返してください。\n"
-        "形式: [{\"category_name\": \"Electronics\", \"fvf_rate\": 13.25}]\n\n"
+        "カテゴリ名・最終価値手数料(FVF)率(%)・補足情報のリストを JSON 配列で返してください。\n"
+        "fvf_rate は代表的な料率（%）を数値で入力してください。\n"
+        "fvf_note には段階的料率・例外条件・上限金額など補足情報を日本語で入力してください。"
+        "補足なしの場合は空文字にしてください。\n"
+        "例: [{\"category_name\": \"Electronics\", \"fvf_rate\": 13.25, \"fvf_note\": \"$7,500超は2.35%\"}]\n\n"
         f"HTML:\n{html}"
     )
 
@@ -46,8 +54,9 @@ def extract_fvf_with_gemini(html: str, marketplace_id: str) -> dict:
                     "properties": {
                         "category_name": {"type": "STRING"},
                         "fvf_rate": {"type": "NUMBER"},
+                        "fvf_note": {"type": "STRING"},
                     },
-                    "required": ["category_name", "fvf_rate"],
+                    "required": ["category_name", "fvf_rate", "fvf_note"],
                 },
             },
         },
@@ -65,8 +74,14 @@ def extract_fvf_with_gemini(html: str, marketplace_id: str) -> dict:
     text = data["candidates"][0]["content"]["parts"][0]["text"]
     rates_list = json.loads(text)
 
-    # category_name → fvf_rate の辞書に変換
-    return {item["category_name"]: item["fvf_rate"] for item in rates_list}
+    # category_name → {"fvf_rate": ..., "fvf_note": ...} の辞書に変換
+    return {
+        item["category_name"]: {
+            "fvf_rate": item["fvf_rate"],
+            "fvf_note": item.get("fvf_note", ""),
+        }
+        for item in rates_list
+    }
 
 
 def main():
