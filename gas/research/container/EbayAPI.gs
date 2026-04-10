@@ -424,37 +424,60 @@ function extractItemSpecifics(item) {
 }
 
 /**
- * URLから商品の全情報を取得
+ * URLから商品の全情報を取得（_cache シートを利用してAPI呼び出しを削減）
+ *
+ * キャッシュヒット時: category_id / category_name / item_specs_json を返す（API 呼び出しなし）
+ *   ※ title / imageUrl はキャッシュに含まれないため空文字になる
+ * キャッシュミス時: eBay API を呼び出し、結果を _cache シートに保存してから返す
  *
  * @param {string} url eBay商品URL
- * @returns {Object} { item, category, specifics }
+ * @returns {Object} { item, category, specifics, title, itemId, imageUrl }
  */
 function getProductInfoFromUrl(url) {
+  // ─── キャッシュ確認 ───────────────────────────────────────
+  const cached = getCacheEntry(url);
+  if (cached) {
+    return {
+      item: {
+        categoryId:   cached.categoryId,
+        categoryPath: cached.categoryName
+      },
+      category: {
+        categoryId:   cached.categoryId,
+        categoryName: cached.categoryName,
+        fullPath:     cached.categoryName
+      },
+      specifics: cached.specifics,
+      title:     '',   // キャッシュには title を保存しないため空文字
+      itemId:    extractItemIdFromUrl(url),
+      imageUrl:  ''
+    };
+  }
+
+  // ─── キャッシュミス: API 呼び出し ─────────────────────────
   try {
-    // URLから商品IDを抽出
     const itemId = extractItemIdFromUrl(url);
     Logger.log('商品ID: ' + itemId);
 
-    // eBay APIで商品情報を取得
     const item = getItemFromEbay(itemId);
 
-    // カテゴリ情報を抽出
     const category = extractCategoryInfo(item);
-
-    // アイテムスペシフィックスを抽出
     const specifics = extractItemSpecifics(item);
+    const imageUrl  = item.image && item.image.imageUrl ? item.image.imageUrl : '';
 
-    // 画像URLを抽出
-    const imageUrl = item.image && item.image.imageUrl ? item.image.imageUrl : '';
-
-    return {
-      item: item,
-      category: category,
+    const productInfo = {
+      item:      item,
+      category:  category,
       specifics: specifics,
-      title: item.title || '',
-      itemId: itemId,
-      imageUrl: imageUrl
+      title:     item.title || '',
+      itemId:    itemId,
+      imageUrl:  imageUrl
     };
+
+    // _cache シートに保存
+    saveCacheEntry(url, productInfo);
+
+    return productInfo;
 
   } catch (error) {
     Logger.log('getProductInfoFromUrlエラー: ' + error.toString());
