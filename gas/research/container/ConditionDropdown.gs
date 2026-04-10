@@ -5,8 +5,16 @@
  * eBayコンディションのプルダウンを生成します。
  *
  * データソース: カテゴリマスタスプレッドシート（ツール設定の「カテゴリマスタ」）
- *   - category_master_EBAY_US シート: conditions_json でカテゴリ別コンディションIDを取得
- *   - condition_ja_map シート: ja_display で日本語表示名を取得
+ *   - category_master_EBAY_US シート: condition_group 列でグループを取得
+ *   - condition_ja_map シート: ja_map_json でグループ別の日本語表示名を取得
+ *
+ * condition_ja_map スキーマ（1グループ1行）:
+ *   condition_group    : グループラベル（A/B/C...）
+ *   condition_ids_json : [1000, 3000] 等
+ *   ja_map_json        : {"1000":"新品、未使用","3000":"やや傷や汚れあり"} 等
+ *   category_count     : 該当カテゴリ数
+ *   example_categories : 代表カテゴリ名3つ
+ *   last_synced
  *
  * トリガー経路:
  *   1. G8（カテゴリID）を手動編集 → handleEdit → setConditionDropdown
@@ -37,118 +45,110 @@ function openCategoryMasterSs() {
 }
 
 /**
- * category_master_EBAY_US シートから指定カテゴリの conditions_json を取得
+ * カテゴリIDに対応する condition_group を category_master_EBAY_US から取得
  *
- * @param {string} categoryId eBayカテゴリID
- * @returns {Array<{id: string, name: string, enum: string, category_display: string}>}
- *          コンディション情報の配列（見つからない場合は空配列）
+ * @param {Spreadsheet} categoryMasterSs
+ * @param {string} categoryId
+ * @returns {string|null} グループラベル（例: "A"）または null
  */
-function getConditionItemsByCategoryId(categoryId) {
-  if (!categoryId) return [];
-
-  const categoryMasterSs = openCategoryMasterSs();
-  if (!categoryMasterSs) return [];
+function getConditionGroupForCategory(categoryMasterSs, categoryId) {
+  if (!categoryMasterSs || !categoryId) return null;
 
   try {
     const sheet = categoryMasterSs.getSheetByName(SHEET_NAMES.CATEGORY_MASTER);
     if (!sheet) {
       Logger.log('⚠️ ' + SHEET_NAMES.CATEGORY_MASTER + ' シートが見つかりません');
-      return [];
+      return null;
     }
 
     const lastRow = sheet.getLastRow();
-    if (lastRow < 2) return [];
+    if (lastRow < 2) return null;
 
-    // ヘッダー行からカラムインデックスを動的に取得
     const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    const categoryIdIdx    = headers.indexOf('category_id');
-    const conditionsJsonIdx = headers.indexOf('conditions_json');
+    const catIdIdx = headers.indexOf('category_id');
+    const groupIdx = headers.indexOf('condition_group');
 
-    if (categoryIdIdx === -1 || conditionsJsonIdx === -1) {
-      Logger.log('⚠️ 必要な列が見つかりません（category_id, conditions_json）');
-      return [];
+    if (catIdIdx === -1) {
+      Logger.log('⚠️ category_id 列が見つかりません');
+      return null;
+    }
+    if (groupIdx === -1) {
+      Logger.log('⚠️ condition_group 列が見つかりません。category_master を最新版に更新してください');
+      return null;
     }
 
-    // 全行を一括取得してカテゴリIDで検索
     const data = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
     for (let i = 0; i < data.length; i++) {
-      if (String(data[i][categoryIdIdx]) === String(categoryId)) {
-        const conditionsJson = data[i][conditionsJsonIdx];
-        if (!conditionsJson) return [];
-        try {
-          const parsed = JSON.parse(conditionsJson);
-          // [{id, name, enum, category_display}] 形式を想定
-          return parsed.map(function(item) {
-            if (typeof item === 'object' && item !== null) {
-              return {
-                id:               String(item.id || ''),
-                name:             String(item.name || ''),
-                enum:             String(item.enum || ''),
-                category_display: String(item.category_display || item.name || '')
-              };
-            }
-            return { id: String(item), name: String(item), enum: '', category_display: String(item) };
-          });
-        } catch (e) {
-          Logger.log('❌ conditions_json パースエラー: ' + e.toString());
-          return [];
-        }
+      if (String(data[i][catIdIdx]) === String(categoryId)) {
+        return data[i][groupIdx] || null;
       }
     }
 
     Logger.log('カテゴリID ' + categoryId + ' が ' + SHEET_NAMES.CATEGORY_MASTER + ' に見つかりません');
-    return [];
+    return null;
 
   } catch (error) {
-    Logger.log('❌ getConditionItemsByCategoryId エラー: ' + error.toString());
-    return [];
+    Logger.log('❌ getConditionGroupForCategory エラー: ' + error.toString());
+    return null;
   }
 }
 
 /**
- * condition_ja_map シートを参照して、条件IDリストを日本語表示名にマッピング
- * condition_ja_map に登録されていない ID は category_display をそのまま使用
+ * condition_group に対応する ja_map_json をパースして返す
  *
  * @param {Spreadsheet} categoryMasterSs
- * @param {Array<{id: string, category_display: string}>} conditionItems
- * @returns {Array<string>} プルダウン表示名の配列（ja_display または category_display）
+ * @param {string} group グループラベル（例: "A"）
+ * @returns {Object|null} {conditionId: jaDisplay} 形式のオブジェクト
  */
-function buildConditionDisplayOptions(categoryMasterSs, conditionItems) {
-  if (!conditionItems || conditionItems.length === 0) return [];
+function getJaMapForGroup(categoryMasterSs, group) {
+  if (!categoryMasterSs || !group) return null;
 
-  // condition_ja_map から id → ja_display の逆引きマップを構築
-  const jaMap = {};
   try {
     const sheet = categoryMasterSs.getSheetByName(SHEET_NAMES.CONDITION_JA_MAP);
-    if (sheet) {
-      const data = sheet.getDataRange().getValues();
-      const headers = data[0];
-      const idIdx        = headers.indexOf('condition_id');
-      const jaDisplayIdx = headers.indexOf('ja_display');
-
-      if (idIdx !== -1 && jaDisplayIdx !== -1) {
-        for (let i = 1; i < data.length; i++) {
-          const id = String(data[i][idIdx]);
-          const ja = data[i][jaDisplayIdx];
-          if (id && ja) jaMap[id] = String(ja);
-        }
-        Logger.log('condition_ja_map 読み込み完了: ' + Object.keys(jaMap).length + '件');
-      }
-    } else {
-      Logger.log('⚠️ ' + SHEET_NAMES.CONDITION_JA_MAP + ' シートが見つかりません。英語名で表示します');
+    if (!sheet) {
+      Logger.log('⚠️ ' + SHEET_NAMES.CONDITION_JA_MAP + ' シートが見つかりません');
+      return null;
     }
-  } catch (e) {
-    Logger.log('⚠️ condition_ja_map 読み込みエラー: ' + e.toString());
-  }
 
-  return conditionItems.map(function(item) {
-    return jaMap[item.id] || item.category_display || item.name || item.id;
-  });
+    const data = sheet.getDataRange().getValues();
+    const headers = data[0];
+    const groupIdx  = headers.indexOf('condition_group');
+    const jaMapIdx  = headers.indexOf('ja_map_json');
+
+    if (groupIdx === -1 || jaMapIdx === -1) {
+      Logger.log('⚠️ condition_group または ja_map_json 列が見つかりません。condition_ja_map を最新版に更新してください');
+      return null;
+    }
+
+    for (let i = 1; i < data.length; i++) {
+      if (String(data[i][groupIdx]) === String(group)) {
+        const jaMapJson = data[i][jaMapIdx];
+        if (!jaMapJson) return null;
+        try {
+          return JSON.parse(jaMapJson);
+        } catch (e) {
+          Logger.log('❌ ja_map_json パースエラー（グループ' + group + '）: ' + e.toString());
+          return null;
+        }
+      }
+    }
+
+    Logger.log('グループ ' + group + ' が ' + SHEET_NAMES.CONDITION_JA_MAP + ' に見つかりません');
+    return null;
+
+  } catch (error) {
+    Logger.log('❌ getJaMapForGroup エラー: ' + error.toString());
+    return null;
+  }
 }
 
 /**
  * リサーチシートのE8（状態）セルに、カテゴリIDに対応する状態プルダウンを設定
- * カテゴリIDが空の場合はプルダウンをクリアします
+ *
+ * フロー:
+ *   1. category_master から condition_group を取得
+ *   2. condition_ja_map で ja_map_json をJSON.parse
+ *   3. values（ja_display）をプルダウン選択肢に設定
  *
  * @param {string} categoryId カテゴリID（G8の値）
  * @param {Sheet} sheet リサーチシート
@@ -168,7 +168,6 @@ function setConditionDropdown(categoryId, sheet) {
 
   const categoryMasterSs = openCategoryMasterSs();
   if (!categoryMasterSs) {
-    // カテゴリマスタ未設定でもエラーにしない
     SpreadsheetApp.getActiveSpreadsheet().toast(
       'カテゴリマスタが未設定のため状態プルダウンを生成できません。\nツール設定の「カテゴリマスタ」を確認してください。',
       '⚠️ 状態プルダウン',
@@ -177,44 +176,88 @@ function setConditionDropdown(categoryId, sheet) {
     return;
   }
 
-  const conditionItems = getConditionItemsByCategoryId(categoryId);
-
-  if (conditionItems.length === 0) {
-    Logger.log('カテゴリID ' + categoryId + ' のコンディション情報が取得できませんでした');
+  // 1. condition_group を取得
+  const group = getConditionGroupForCategory(categoryMasterSs, String(categoryId));
+  if (!group) {
     conditionCell.clearDataValidations();
     SpreadsheetApp.getActiveSpreadsheet().toast(
-      'カテゴリID ' + categoryId + ' の状態情報が見つかりませんでした',
+      'カテゴリID ' + categoryId + ' の状態グループが見つかりません',
       '⚠️ 状態プルダウン',
       5
     );
     return;
   }
 
-  const displayOptions = buildConditionDisplayOptions(categoryMasterSs, conditionItems);
+  // 2. ja_map_json を取得・パース
+  const jaMap = getJaMapForGroup(categoryMasterSs, group);
+  if (!jaMap || Object.keys(jaMap).length === 0) {
+    conditionCell.clearDataValidations();
+    Logger.log('グループ ' + group + ' の ja_map_json が空です');
+    return;
+  }
+
+  // 3. プルダウン選択肢 = ja_map_json の値（ja_display）
+  const displayOptions = Object.values(jaMap).filter(function(v) { return v && v.trim() !== ''; });
 
   if (displayOptions.length === 0) {
     conditionCell.clearDataValidations();
     return;
   }
 
-  // データ入力規則（プルダウン）を設定
   const rule = SpreadsheetApp.newDataValidation()
     .requireValueInList(displayOptions, true)
     .setAllowInvalid(false)
     .build();
   conditionCell.setDataValidation(rule);
 
-  // 既存の値がリストにない場合はクリア
+  // 既存値がリストにない場合はクリア
   const currentValue = conditionCell.getValue();
   if (currentValue && displayOptions.indexOf(String(currentValue)) === -1) {
     conditionCell.clearContent();
     Logger.log('既存の状態値がリストにないためクリアしました: ' + currentValue);
   }
 
-  Logger.log('✅ 状態プルダウン設定完了: カテゴリID=' + categoryId + ' / ' + displayOptions.length + '件');
+  Logger.log('✅ 状態プルダウン設定: カテゴリID=' + categoryId + ' → グループ' + group + ' / ' + displayOptions.length + '件');
   SpreadsheetApp.getActiveSpreadsheet().toast(
-    '状態プルダウンを設定しました（' + displayOptions.length + '件）',
+    '状態プルダウンを設定しました（グループ' + group + ' / ' + displayOptions.length + '件）',
     '✅ 状態',
     2
   );
+}
+
+/**
+ * ja_display から condition_id を逆引き（出品データ転記時に呼び出す）
+ *
+ * カテゴリIDからcondition_groupを特定し、
+ * ja_map_json（{conditionId: jaDisplay}）を逆引きしてcondition_idを返す。
+ *
+ * @param {string} categoryId カテゴリID（G8の値）
+ * @param {string} jaDisplay  選択された日本語表示名（E8の値）
+ * @returns {{condition_id: number}|null}
+ */
+function getConditionIdByJaDisplay(categoryId, jaDisplay) {
+  if (!categoryId || !jaDisplay) return null;
+
+  const categoryMasterSs = openCategoryMasterSs();
+  if (!categoryMasterSs) return null;
+
+  const group = getConditionGroupForCategory(categoryMasterSs, String(categoryId));
+  if (!group) return null;
+
+  const jaMap = getJaMapForGroup(categoryMasterSs, group);
+  if (!jaMap) return null;
+
+  // 逆引き: jaDisplay に一致する conditionId を探す
+  const keys = Object.keys(jaMap);
+  for (let i = 0; i < keys.length; i++) {
+    if (jaMap[keys[i]] === jaDisplay) {
+      const condId = keys[i];
+      return {
+        condition_id: condId.match(/^\d+$/) ? parseInt(condId, 10) : condId
+      };
+    }
+  }
+
+  Logger.log('ja_display に対応する condition_id が見つかりません: ' + jaDisplay);
+  return null;
 }

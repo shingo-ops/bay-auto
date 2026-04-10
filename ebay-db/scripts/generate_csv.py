@@ -1,7 +1,13 @@
 """
 generate_csv.py
 category_raw.json + fvf_rates.json を結合して
-category_master.csv と condition_ja_map.csv を生成
+category_master_EBAY_XX.csv と condition_ja_map.csv を生成
+
+condition_group 設計:
+  全カテゴリ・全マーケットの conditions_json を分析し、
+  同一の condition_id セットを持つカテゴリを同じグループ（A/B/C...）に分類。
+  - category_master_EBAY_XX.csv に condition_group 列を追加（15列）
+  - condition_ja_map.csv を 1グループ1行の構造に変更（6列）
 """
 
 import os
@@ -35,7 +41,6 @@ CONDITION_ENUM_MAP: dict[int, str] = {
 }
 
 # ja_display デフォルト値（eBay標準コンディション向け）
-# カテゴリ固有の表示名（Graded等）は ja_display が空のまま → GeminiTranslate.gs で補完
 JA_DISPLAY_DEFAULT: dict[int, str] = {
     1000: "新品、未使用",
     1500: "未使用に近い",
@@ -56,42 +61,149 @@ JA_DISPLAY_DEFAULT: dict[int, str] = {
     7000: "ジャンク品（部品取り用）",
 }
 
+# トレカ系グループ用の特別表記
+JA_DISPLAY_TRADING_CARD: dict[str, str] = {
+    "2750": "鑑定済み",
+    "4000": "未鑑定",
+}
+
 
 def load_json(path: str) -> any:
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
-def generate_category_master(rows: list[dict], fvf_rates: dict) -> None:
-    """マーケットプレイスごとに category_master_EBAY_XX.csv を生成（14列）
+def is_trading_card_group(ids: frozenset) -> bool:
+    """トレカ系グループ判定
+
+    2750（Like New）と4000（Very Good）を含み、
+    かつ消耗品的なコンディション（5000/6000/7000/2500）を含まないグループ。
+    → Trading Card Singles / CCG 等の鑑定済み/未鑑定系カテゴリ
+    """
+    return (
+        {"2750", "4000"}.issubset(ids)
+        and not ids.intersection({"5000", "6000", "7000", "2500"})
+    )
+
+
+def build_ja_map_json(condition_items: list[dict], ids: frozenset) -> str:
+    """グループの ja_map_json を生成
+
+    JA_DISPLAY_DEFAULT をベースに、トレカ系グループは
+    2750 → 鑑定済み / 4000 → 未鑑定 で上書き。
+
+    Args:
+        condition_items: conditions_json のパース済みリスト
+        ids: condition_id の frozenset
+
+    Returns:
+        JSON文字列 {"1000": "新品、未使用", ...}
+    """
+    tcg = is_trading_card_group(ids)
+    ja_map: dict[str, str] = {}
+
+    for item in condition_items:
+        cid = str(item.get("id", ""))
+        if not cid:
+            continue
+        cid_int = int(cid) if cid.isdigit() else None
+
+        if tcg and cid in JA_DISPLAY_TRADING_CARD:
+            ja_map[cid] = JA_DISPLAY_TRADING_CARD[cid]
+        else:
+            ja_map[cid] = JA_DISPLAY_DEFAULT.get(cid_int, "")
+
+    return json.dumps(ja_map, ensure_ascii=False)
+
+
+def build_condition_groups(
+    rows: list[dict],
+) -> tuple[list[str], dict[frozenset, dict]]:
+    """全行の conditions_json を分析してグループを割り当てる
+
+    全マーケット横断で同一の condition_id セットを同じグループラベル（A/B/C...）に分類。
+    グループ数が26を超える場合は "27", "28", ... の文字列ラベルを使用。
+
+    Args:
+        rows: category_raw.json の全行（全マーケット）
+
+    Returns:
+        row_group_labels: rows と並行した各行のグループラベルリスト
+        group_registry: {frozenset(ids): {label, ids, count, examples, condition_items}}
+    """
+    groups: dict[frozenset, str] = {}
+    group_registry: dict[frozenset, dict] = {}
+    group_counter = 0
+    row_group_labels: list[str] = []
+
+    for row in rows:
+        try:
+            conds = json.loads(row.get("conditions_json", "[]") or "[]")
+            ids = frozenset(
+                str(c["id"]) for c in conds if isinstance(c, dict) and "id" in c
+            )
+        except Exception:
+            ids = frozenset()
+            conds = []
+
+        if ids not in groups:
+            label = (
+                chr(65 + group_counter) if group_counter < 26 else str(group_counter + 1)
+            )
+            groups[ids] = label
+            group_registry[ids] = {
+                "label": label,
+                "ids": ids,
+                "count": 0,
+                "examples": [],
+                "condition_items": conds,
+            }
+            group_counter += 1
+
+        label = groups[ids]
+        info = group_registry[ids]
+        info["count"] += 1
+        cat_name = row.get("category_name", "")
+        if cat_name and len(info["examples"]) < 3:
+            info["examples"].append(cat_name)
+
+        row_group_labels.append(label)
+
+    return row_group_labels, group_registry
+
+
+def generate_category_master(
+    rows: list[dict], fvf_rates: dict, row_group_labels: list[str]
+) -> None:
+    """マーケットプレイスごとに category_master_EBAY_XX.csv を生成（15列）
 
     列定義: marketplace_id, category_tree_id, category_id, category_name,
             required_specs_json, recommended_specs_json, optional_specs_json,
             aspect_values_json, aspect_modes_json, multi_value_aspects_json,
-            conditions_json, fvf_rate, fvf_note, last_synced
+            conditions_json, condition_group, fvf_rate, fvf_note, last_synced
     """
     fieldnames = [
         "marketplace_id", "category_tree_id", "category_id", "category_name",
         "required_specs_json", "recommended_specs_json", "optional_specs_json",
         "aspect_values_json", "aspect_modes_json", "multi_value_aspects_json",
-        "conditions_json", "fvf_rate", "fvf_note", "last_synced",
+        "conditions_json", "condition_group", "fvf_rate", "fvf_note", "last_synced",
     ]
 
-    # マーケットプレイスごとに分類
-    by_market: dict[str, list[dict]] = {}
-    for row in rows:
+    # マーケットプレイスごとに分類（行インデックスを保持）
+    by_market: dict[str, list[tuple[int, dict]]] = {}
+    for idx, row in enumerate(rows):
         mp = row.get("marketplace_id", "UNKNOWN")
-        by_market.setdefault(mp, []).append(row)
+        by_market.setdefault(mp, []).append((idx, row))
 
     total = 0
-    for mp, mp_rows in sorted(by_market.items()):
+    for mp, indexed_rows in sorted(by_market.items()):
         output_path = f"{OUTPUT_DIR}/category_master_{mp}.csv"
         with open(output_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
 
             fvf_map = fvf_rates.get(mp, {})
-            for row in mp_rows:
+            for idx, row in indexed_rows:
                 cat_name = row.get("category_name", "")
 
                 # FVF レートをカテゴリ名で紐付け（部分一致）
@@ -115,71 +227,77 @@ def generate_category_master(rows: list[dict], fvf_rates: dict) -> None:
                     "aspect_modes_json":        row.get("aspect_modes_json",        "{}"),
                     "multi_value_aspects_json": row.get("multi_value_aspects_json", "[]"),
                     "conditions_json":          row.get("conditions_json",          "[]"),
+                    "condition_group":          row_group_labels[idx],
                     "fvf_rate":                 fvf_rate,
                     "fvf_note":                 fvf_note,
                     "last_synced":              TODAY,
                 })
 
-        print(f"  {output_path}: {len(mp_rows)} 行")
-        total += len(mp_rows)
+        print(f"  {output_path}: {len(indexed_rows)} 行")
+        total += len(indexed_rows)
 
-    print(f"category_master_EBAY_*.csv 生成完了: 合計 {total} 行")
+    print(f"category_master_EBAY_*.csv 生成完了: 合計 {total} 行（condition_group列追加）")
 
 
-def generate_condition_ja_map(rows: list[dict]) -> None:
-    """condition_ja_map.csv を生成（condition_id でユニーク化）
+def generate_condition_ja_map(group_registry: dict[frozenset, dict]) -> None:
+    """condition_ja_map.csv を生成（1グループ1行）
 
-    全カテゴリ網羅後は同一 condition_id が大量の category_id に紐付くため、
-    condition_id を主キーとして最初の出現を採用する。
+    ヘッダー:
+      condition_group   : グループラベル（A/B/C...）
+      condition_ids_json: [1000, 3000] 等（整数配列JSON）
+      ja_map_json       : {"1000": "新品、未使用", ...}
+      category_count    : 該当カテゴリ数
+      example_categories: 代表カテゴリ名3つ（カンマ区切り）
+      last_synced       : 更新日
+
+    トレカ系グループ（2750/4000含み 5000/6000/7000/2500 不含）は
+    2750 → 鑑定済み / 4000 → 未鑑定 を適用。
     """
     fieldnames = [
-        "condition_id", "condition_name", "condition_enum",
-        "ja_display", "ja_description", "last_synced",
+        "condition_group", "condition_ids_json", "ja_map_json",
+        "category_count", "example_categories", "last_synced",
     ]
 
-    seen: dict[str, dict] = {}
-    for row in rows:
-        conditions_json = row.get("conditions_json", "[]")
-        if not conditions_json or conditions_json == "[]":
-            continue
-        try:
-            conditions = json.loads(conditions_json)
-        except Exception:
-            continue
-
-        for c in conditions:
-            cid = str(c.get("id", ""))
-            if not cid or cid in seen:
-                continue
-            cid_int = int(cid) if cid.isdigit() else None
-            seen[cid] = {
-                "condition_id":   cid,
-                "condition_name": c.get("name", ""),
-                "condition_enum": CONDITION_ENUM_MAP.get(cid_int, c.get("enum", "")),
-                "ja_display":     JA_DISPLAY_DEFAULT.get(cid_int, ""),
-                "ja_description": "",
-                "last_synced":    TODAY,
-            }
-
-    # マッピング辞書に未定義の condition_id をログ出力
-    undefined_ids = sorted(
-        (cid for cid in seen if not (cid.isdigit() and int(cid) in CONDITION_ENUM_MAP)),
-        key=lambda x: int(x) if x.isdigit() else x,
-    )
-    if undefined_ids:
-        print(f"[WARN] マッピング辞書未定義の condition_id ({len(undefined_ids)} 件): "
-              + ", ".join(undefined_ids))
-    else:
-        print("[INFO] 未定義 condition_id なし（全IDがマッピング済み）")
+    # グループラベル順でソート
+    sorted_groups = sorted(group_registry.values(), key=lambda g: g["label"])
 
     output_path = f"{OUTPUT_DIR}/condition_ja_map.csv"
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        for entry in seen.values():
-            writer.writerow(entry)
 
-    print(f"condition_ja_map.csv 生成: {len(seen)} 行 → {output_path}")
+        for g in sorted_groups:
+            ids = g["ids"]
+
+            # condition_ids_json: 数値昇順でソート
+            sorted_ids = sorted(ids, key=lambda x: int(x) if x.isdigit() else 0)
+            condition_ids_json = json.dumps(
+                [int(x) if x.isdigit() else x for x in sorted_ids],
+                ensure_ascii=False,
+            )
+
+            # condition_items を condition_id 昇順にソート
+            items_sorted = sorted(
+                g["condition_items"],
+                key=lambda c: int(str(c.get("id", 0))) if str(c.get("id", "")).isdigit() else 0,
+            )
+
+            writer.writerow({
+                "condition_group":    g["label"],
+                "condition_ids_json": condition_ids_json,
+                "ja_map_json":        build_ja_map_json(items_sorted, ids),
+                "category_count":     g["count"],
+                "example_categories": ", ".join(g["examples"]),
+                "last_synced":        TODAY,
+            })
+
+    print(f"condition_ja_map.csv 生成: {len(sorted_groups)} グループ → {output_path}")
+
+    # サマリー出力
+    for g in sorted_groups:
+        tcg_mark = " [TCG]" if is_trading_card_group(g["ids"]) else ""
+        ids_str = sorted(g["ids"], key=lambda x: int(x) if x.isdigit() else 0)
+        print(f"  グループ{g['label']}{tcg_mark}: {ids_str} → {g['count']}カテゴリ")
 
 
 def main():
@@ -188,8 +306,32 @@ def main():
     category_raw = load_json(f"{OUTPUT_DIR}/category_raw.json")
     fvf_rates = load_json(f"{OUTPUT_DIR}/fvf_rates.json")
 
-    generate_category_master(category_raw, fvf_rates)
-    generate_condition_ja_map(category_raw)
+    # Step1: グローバルグループ計算（全マーケット横断）
+    print("[Step1] condition_group グループ計算中...")
+    row_group_labels, group_registry = build_condition_groups(category_raw)
+    print(f"  グループ数: {len(group_registry)}")
+
+    # 未定義 condition_id の警告
+    all_ids_in_groups = set()
+    for ids in group_registry:
+        all_ids_in_groups.update(ids)
+    undefined = sorted(
+        (cid for cid in all_ids_in_groups if not (cid.isdigit() and int(cid) in CONDITION_ENUM_MAP)),
+        key=lambda x: int(x) if x.isdigit() else x,
+    )
+    if undefined:
+        print(f"[WARN] マッピング辞書未定義の condition_id ({len(undefined)} 件): "
+              + ", ".join(undefined))
+    else:
+        print("[INFO] 未定義 condition_id なし（全IDがマッピング済み）")
+
+    # Step2: category_master CSV生成
+    print("[Step2] category_master_EBAY_*.csv 生成中...")
+    generate_category_master(category_raw, fvf_rates, row_group_labels)
+
+    # Step3: condition_ja_map CSV生成
+    print("[Step3] condition_ja_map.csv 生成中...")
+    generate_condition_ja_map(group_registry)
 
     print("=== 完了 ===")
 
