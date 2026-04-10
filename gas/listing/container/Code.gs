@@ -13,7 +13,7 @@
  * 7. 保存
  *
  * 図形ボタンに割り当てる関数:
- * - authorizeScript: 権限承認 + onEdit トリガー登録（初回セットアップ時に実行）
+ * - authorizeScript: 権限承認 + handleEdit トリガー登録（初回セットアップ時に実行）
  * - setupEbayManager: eBay API セットアップ
  * - menuGetPolicies: ポリシー取得
  * - menuSyncPolicies: ポリシー更新
@@ -27,7 +27,7 @@
  * 【インストール済みトリガー】handleEdit
  *
  * 出品シートの編集時に自動呼び出しされる。
- * setupOnEditTrigger() で登録すること。
+ * authorizeScript() を実行するとトリガーが登録される。
  *
  * ・カテゴリID 列が変更された場合
  *     → 確認ダイアログを表示し、YES なら EbayLib.applyCategoryChange() を実行
@@ -130,26 +130,42 @@ function _handleCategoryIdChange(e, spreadsheetId, sheetName, row) {
 }
 
 /**
- * 【権限承認 + onEdit トリガー登録】
+ * 【権限承認 + handleEdit トリガー登録】
  *
  * 初回セットアップ時に実行する。図形ボタンに割り当て可。
- * - スプレッドシート / ドライブ / 外部URL の権限を一括承認
- * - handleEdit トリガーを登録（既存トリガーがある場合はスキップ）
+ *
+ * 実行内容:
+ *   1. スプレッドシート / ドライブ / 外部URL の権限を一括承認
+ *   2. handleEdit トリガーを登録（既存トリガーがある場合はスキップ）
  */
 function authorizeScript() {
   const ui = SpreadsheetApp.getUi();
   try {
-    // ── 権限承認 ──────────────────────────────────────
+    // ── 1. 権限承認 ────────────────────────────────────────────────
     const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-    sheet.getRange('A1').getValue(); // スプレッドシート権限
-
-    const folders = DriveApp.getFolders(); // ドライブ権限
+    sheet.getRange('A1').getValue();                                        // スプレッドシート権限
+    const folders = DriveApp.getFolders();                                  // ドライブ権限
     if (folders.hasNext()) { folders.next(); }
-
     UrlFetchApp.fetch('https://www.google.com', { muteHttpExceptions: true }); // 外部URL権限
 
-    // ── onEdit トリガー登録（重複チェック付き）───────
-    const triggerRegistered = setupOnEditTrigger();
+    // ── 2. handleEdit トリガー登録（重複チェック付き）──────────────
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const existing = ScriptApp.getUserTriggers(ss).filter(function(t) {
+      return t.getHandlerFunction() === 'handleEdit';
+    });
+
+    let triggerRegistered;
+    if (existing.length > 0) {
+      Logger.log('handleEdit トリガーは既に登録済みのためスキップ（' + existing.length + '件）');
+      triggerRegistered = false;
+    } else {
+      ScriptApp.newTrigger('handleEdit')
+        .forSpreadsheet(ss)
+        .onEdit()
+        .create();
+      Logger.log('✅ handleEdit トリガーを新規登録しました');
+      triggerRegistered = true;
+    }
 
     ui.alert(
       '権限承認完了',
@@ -165,36 +181,6 @@ function authorizeScript() {
     ui.alert('エラー', '❌ 権限承認中にエラーが発生しました:\n' + error.toString(), ui.ButtonSet.OK);
     Logger.log('❌ authorizeScript エラー: ' + error.toString());
   }
-}
-
-/**
- * 【handleEdit トリガー登録】
- *
- * handleEdit トリガーが未登録の場合のみ新規作成する（重複登録防止）。
- * 図形ボタンに割り当て可。authorizeScript からも呼び出される。
- *
- * @returns {boolean} true = 新規登録した / false = 既存トリガーがあったためスキップ
- */
-function setupOnEditTrigger() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-
-  // 既存の handleEdit トリガーを確認（getUserTriggers で現ユーザー分のみ検索）
-  const existing = ScriptApp.getUserTriggers(ss).filter(function(t) {
-    return t.getHandlerFunction() === 'handleEdit';
-  });
-
-  if (existing.length > 0) {
-    Logger.log('handleEdit トリガーは既に登録済みのためスキップ（' + existing.length + '件）');
-    return false;
-  }
-
-  ScriptApp.newTrigger('handleEdit')
-    .forSpreadsheet(ss)
-    .onEdit()
-    .create();
-
-  Logger.log('✅ handleEdit トリガーを新規登録しました');
-  return true;
 }
 
 
