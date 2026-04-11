@@ -657,6 +657,8 @@ function fetchSpecFromUrl(url, sheet) {
         'スペック情報をキャッシュに保存しました（カテゴリ: ' + newCategoryId + '）',
         '✅ 完了', 3
       );
+      // D8をクリア（同一URL再入力でもトリガーが発火するよう）
+      sheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.SPEC_URL.col).clearContent();
       return;
     }
 
@@ -666,6 +668,8 @@ function fetchSpecFromUrl(url, sheet) {
       existingCategoryId, existingCategoryName,
       newCategoryId, newCategoryName, newSpecifics
     );
+    // ダイアログ後もD8をクリア（同一URL再入力でもトリガーが発火するよう）
+    sheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.SPEC_URL.col).clearContent();
 
   } catch (error) {
     Logger.log('[Spec] fetchSpecFromUrl エラー: ' + error.toString());

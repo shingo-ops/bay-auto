@@ -23,7 +23,8 @@
  *
  * メニュー構成:
  *   出品管理
- *     └── 出品のみ
+ *     ├── 出品（新規出品）
+ *     └── 更新（出品済み商品の更新）
  *   初回セットアップ
  *     ├── ポリシー取得
  *     └── ポリシー更新
@@ -32,7 +33,8 @@ function onOpen() {
   const ui = SpreadsheetApp.getUi();
 
   ui.createMenu('出品管理')
-    .addItem('出品のみ', 'menuListingOnly')
+    .addItem('出品', 'menuCreateListing')
+    .addItem('更新', 'menuUpdateListing')
     .addToUi();
 
   ui.createMenu('初回セットアップ')
@@ -42,9 +44,9 @@ function onOpen() {
 }
 
 /**
- * 【出品のみ】アクティブ行を出品する
+ * 【出品】アクティブ行を新規出品する
  */
-function menuListingOnly() {
+function menuCreateListing() {
   const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
   const ui = SpreadsheetApp.getUi();
 
@@ -62,7 +64,7 @@ function menuListingOnly() {
 
   const response = ui.alert(
     '出品確認',
-    row + '行目を出品します。\n実行しますか？',
+    row + '行目を新規出品します。\n実行しますか？',
     ui.ButtonSet.OK_CANCEL
   );
   if (response !== ui.Button.OK) return;
@@ -70,6 +72,40 @@ function menuListingOnly() {
   const result = EbayLib.menuCreateListing(spreadsheetId, row);
   if (result.success) {
     ui.alert('出品完了', result.message, ui.ButtonSet.OK);
+  } else {
+    ui.alert('エラー', result.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * 【更新】アクティブ行の出品済み商品を更新する
+ */
+function menuUpdateListing() {
+  const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+  const ui = SpreadsheetApp.getUi();
+
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  if (sheet.getName() !== '出品') {
+    ui.alert('エラー', '出品シートを選択してください。', ui.ButtonSet.OK);
+    return;
+  }
+
+  const row = sheet.getActiveRange().getRow();
+  if (row <= 3) {
+    ui.alert('エラー', 'データ行（4行目以降）を選択してください。', ui.ButtonSet.OK);
+    return;
+  }
+
+  const response = ui.alert(
+    '更新確認',
+    row + '行目の出品情報を更新します。\n実行しますか？',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (response !== ui.Button.OK) return;
+
+  const result = EbayLib.menuUpdateListing(spreadsheetId, row);
+  if (result.success) {
+    ui.alert('更新完了', result.message, ui.ButtonSet.OK);
   } else {
     ui.alert('エラー', result.message, ui.ButtonSet.OK);
   }
@@ -414,6 +450,10 @@ function _fetchAndWriteSpecForListing(sheet, row, headerMapping, specUrl) {
 
     // 9. シートに書き込み
     _writeSpecsToListingSheet(sheet, row, headerMapping, sortedSpecs, catData);
+
+    // 10. スペックURLをクリア（同一URL再入力でもトリガーが発火するよう）
+    const specUrlColForClear = headerMapping['スペックURL'];
+    if (specUrlColForClear) sheet.getRange(row, specUrlColForClear).clearContent();
 
     const filledCount = sortedSpecs.filter(function(s) { return s.value && String(s.value).trim() !== ''; }).length;
     SpreadsheetApp.getActiveSpreadsheet().toast(
