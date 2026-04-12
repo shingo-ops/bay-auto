@@ -657,6 +657,8 @@ function endFixedPriceItem(spreadsheetId, itemId) {
     if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
 
     autoRefreshTokenIfNeeded(spreadsheetId);
+    // autoRefreshTokenIfNeeded 内の finally で CURRENT_SPREADSHEET_ID がリセットされるため再セット
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
 
     const token  = getUserToken();
     const config = getEbayConfig();
