@@ -154,6 +154,68 @@ function saveCacheEntry(url, productInfo) {
 }
 
 /**
+ * _cache 行2を URL照合なしで直接取得
+ *
+ * @returns {{itemUrl: string, categoryId: string, categoryName: string, specifics: Object, title: string}|null}
+ */
+function getCacheRow2() {
+  try {
+    const sheet = getOrCreateCacheSheet();
+    if (sheet.getLastRow() < 2) return null;
+
+    const row = sheet.getRange(2, 1, 1, ITEM_CACHE_HEADERS.length).getValues()[0];
+    if (!String(row[CACHE_COL.ITEM_URL])) return null;
+
+    let specifics = {};
+    try { specifics = JSON.parse(String(row[CACHE_COL.ITEM_SPECS_JSON] || '{}')); } catch (e) {}
+
+    return {
+      itemUrl:      String(row[CACHE_COL.ITEM_URL]      || ''),
+      categoryId:   String(row[CACHE_COL.CATEGORY_ID]   || ''),
+      categoryName: String(row[CACHE_COL.CATEGORY_NAME] || ''),
+      specifics:    specifics,
+      title:        String(row[CACHE_COL.TITLE]         || '')
+    };
+  } catch (e) {
+    Logger.log('[Cache] getCacheRow2 エラー: ' + e.toString());
+    return null;
+  }
+}
+
+/**
+ * _cache 行2を部分更新（指定フィールドのみ上書き、他は保持）
+ *
+ * @param {{categoryId?: string, categoryName?: string, specifics?: Object}} updates
+ */
+function updateCacheRow2(updates) {
+  try {
+    const sheet = getOrCreateCacheSheet();
+    const now   = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd HH:mm:ss');
+
+    let row;
+    if (sheet.getLastRow() < 2) {
+      row = new Array(ITEM_CACHE_HEADERS.length).fill('');
+    } else {
+      row = sheet.getRange(2, 1, 1, ITEM_CACHE_HEADERS.length).getValues()[0];
+    }
+
+    if (updates.categoryId   !== undefined) row[CACHE_COL.CATEGORY_ID]     = updates.categoryId;
+    if (updates.categoryName !== undefined) row[CACHE_COL.CATEGORY_NAME]   = updates.categoryName;
+    if (updates.specifics    !== undefined) row[CACHE_COL.ITEM_SPECS_JSON] = JSON.stringify(updates.specifics);
+    row[CACHE_COL.FETCHED_AT] = now;
+
+    if (sheet.getLastRow() < 2) {
+      sheet.appendRow(row);
+    } else {
+      sheet.getRange(2, 1, 1, ITEM_CACHE_HEADERS.length).setValues([row]);
+    }
+    Logger.log('[Cache] 部分更新完了: ' + JSON.stringify(Object.keys(updates)));
+  } catch (e) {
+    Logger.log('[Cache] updateCacheRow2 エラー（無視）: ' + e.toString());
+  }
+}
+
+/**
  * _cache シートを全クリア（ヘッダーは残す）
  * デバッグ・テスト用
  */

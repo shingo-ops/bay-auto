@@ -635,56 +635,65 @@ function fetchSpecFromUrl(url, sheet) {
   try {
     SpreadsheetApp.getActiveSpreadsheet().toast('スペック情報を取得中...', 'eBay API', 5);
 
-    // キャッシュをバイパスして eBay API から直接取得（常に最新データで照合・保存）
+    // 1. eBay API から直接取得（カテゴリ + スペック）
     const itemId    = extractItemIdFromUrl(url);
     const item      = getItemFromEbay(itemId);
     const category  = extractCategoryInfo(item);
     const specifics = extractItemSpecifics(item);
 
-    // _cache を最新データで上書き保存
-    saveCacheEntry(url, {
-      item:      item,
-      category:  category,
-      specifics: specifics,
-      title:     item.title || '',
-      itemId:    itemId,
-      imageUrl:  item.image && item.image.imageUrl ? item.image.imageUrl : ''
-    });
-
     const newCategoryId   = String(category.categoryId   || '');
     const newCategoryName = String(category.categoryName || '');
     const newSpecifics    = specifics || {};
 
-    // G8（カテゴリID）の現行値と比較
-    const existingCategoryId   = String(
-      sheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.CATEGORY_ID.col).getValue() || ''
-    );
-    const existingCategoryName = String(
-      sheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.CATEGORY_NAME.col).getValue() || ''
-    );
+    // 2. 既存キャッシュのカテゴリIDと照合
+    const cacheRow           = getCacheRow2();
+    const existingCategoryId   = cacheRow ? String(cacheRow.categoryId   || '') : '';
+    const existingCategoryName = cacheRow ? String(cacheRow.categoryName || '') : '';
 
-    Logger.log('[Spec] 照合: G8(既存)="' + existingCategoryId + '", 取得="' + newCategoryId + '", G8空=' + !existingCategoryId + ', 一致=' + (existingCategoryId === newCategoryId));
+    Logger.log('[Spec] 照合: キャッシュ(既存)="' + existingCategoryId + '", 取得="' + newCategoryId + '"');
 
-    if (!existingCategoryId || existingCategoryId === newCategoryId) {
-      // 一致 or G8未入力 → キャッシュ保存済み、そのまま完了
-      const reason = !existingCategoryId ? 'G8未入力' : 'カテゴリ一致';
-      Logger.log('[Spec] ' + reason + ' → キャッシュ保存完了: ' + url);
+    if (existingCategoryId && existingCategoryId !== newCategoryId) {
+      // 3a. カテゴリ不一致 → 確認ダイアログ
+      const ui = SpreadsheetApp.getUi();
+      const response = ui.alert(
+        'カテゴリID変更の確認',
+        '現在のキャッシュと異なるカテゴリIDです。差し替えますか？\n\n' +
+        '既存: ' + existingCategoryId + ' (' + existingCategoryName + ')\n' +
+        '新規: ' + newCategoryId + ' (' + newCategoryName + ')',
+        ui.ButtonSet.YES_NO
+      );
+
+      if (response !== ui.Button.YES) {
+        // NO → 何もせずスペックURLをクリアして終了
+        sheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.SPEC_URL.col).clearContent();
+        SpreadsheetApp.getActiveSpreadsheet().toast('キャンセルしました', '', 2);
+        return;
+      }
+
+      // YES → category_id / category_name / item_specs_json を更新
+      updateCacheRow2({
+        categoryId:   newCategoryId,
+        categoryName: newCategoryName,
+        specifics:    newSpecifics
+      });
+      Logger.log('[Spec] カテゴリ+スペック更新完了: ' + newCategoryId);
       SpreadsheetApp.getActiveSpreadsheet().toast(
-        'スペック情報をキャッシュに保存しました（カテゴリ: ' + newCategoryId + '）',
+        'カテゴリとスペックを更新しました（' + newCategoryId + ' / ' + newCategoryName + '）',
         '✅ 完了', 3
       );
-      // D8をクリア（同一URL再入力でもトリガーが発火するよう）
-      sheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.SPEC_URL.col).clearContent();
-      return;
+
+    } else {
+      // 3b. カテゴリ一致（またはキャッシュなし） → item_specs_json のみ更新
+      const reason = !existingCategoryId ? 'キャッシュなし' : 'カテゴリ一致';
+      updateCacheRow2({ specifics: newSpecifics });
+      Logger.log('[Spec] ' + reason + ' → スペックのみ更新完了');
+      SpreadsheetApp.getActiveSpreadsheet().toast(
+        'スペック情報を更新しました（カテゴリ: ' + newCategoryId + '）',
+        '✅ 完了', 3
+      );
     }
 
-    // カテゴリ不一致 → ダイアログ処理へ
-    handleSpecCategoryMismatch(
-      sheet, url,
-      existingCategoryId, existingCategoryName,
-      newCategoryId, newCategoryName, newSpecifics
-    );
-    // ダイアログ後もD8をクリア（同一URL再入力でもトリガーが発火するよう）
+    // D8 をクリア（同一URL再入力でもトリガーが発火するよう）
     sheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.SPEC_URL.col).clearContent();
 
   } catch (error) {
@@ -692,94 +701,6 @@ function fetchSpecFromUrl(url, sheet) {
     SpreadsheetApp.getActiveSpreadsheet().toast(
       'スペック情報の取得に失敗しました。\n' + error.message,
       '⚠️ エラー', 8
-    );
-  }
-}
-
-/**
- * スペックURLのカテゴリがG8と異なる場合のダイアログ処理
- *
- * YES → G8/H8 を新カテゴリで更新・プルダウン再生成・コンディション値を検証
- * NO  → G8/H8 は変更せず、_cache のカテゴリを既存値に戻してスペックのみ保存
- *
- * @param {Sheet}  sheet
- * @param {string} specUrl
- * @param {string} existingCategoryId
- * @param {string} existingCategoryName
- * @param {string} newCategoryId
- * @param {string} newCategoryName
- * @param {Object} newSpecifics
- */
-function handleSpecCategoryMismatch(
-  sheet, specUrl,
-  existingCategoryId, existingCategoryName,
-  newCategoryId, newCategoryName, newSpecifics
-) {
-  const ui = SpreadsheetApp.getUi();
-  const response = ui.alert(
-    'カテゴリ不一致',
-    '現在: ' + existingCategoryId + ' (' + existingCategoryName + ')\n' +
-    '取得: ' + newCategoryId + ' (' + newCategoryName + ')\n\n' +
-    '取得したカテゴリに更新しますか？',
-    ui.ButtonSet.YES_NO
-  );
-
-  if (response === ui.Button.YES) {
-    // ── YES: G8/H8 を新カテゴリに更新 ──────────────────────
-    sheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.CATEGORY_ID.col).setValue(newCategoryId);
-    sheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.CATEGORY_NAME.col).setValue(newCategoryName);
-
-    // E8（コンディション）の現行値を保持
-    const conditionCell     = sheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.CONDITION.col);
-    const oldConditionValue = String(conditionCell.getValue() || '');
-
-    // 新カテゴリでプルダウン再生成
-    setConditionDropdown(newCategoryId, sheet);
-
-    // 旧コンディション値が新カテゴリのプルダウンに存在するか確認
-    if (oldConditionValue) {
-      const categoryMasterSs = openCategoryMasterSs();
-      if (categoryMasterSs) {
-        const group   = getConditionGroupForCategory(categoryMasterSs, newCategoryId);
-        const jaMap   = group ? getJaMapForGroup(categoryMasterSs, group) : null;
-        const validOptions = jaMap
-          ? Object.values(jaMap).filter(function(v) { return v && v.trim() !== ''; })
-          : [];
-
-        if (validOptions.indexOf(oldConditionValue) === -1) {
-          // 旧値が新プルダウンにない → クリアして再選択を促す
-          conditionCell.clearContent();
-          ui.alert(
-            'コンディション再選択',
-            '選択されていた「' + oldConditionValue + '」は新しいカテゴリでは使用できません。\n' +
-            'プルダウンから再度選択してください。',
-            ui.ButtonSet.OK
-          );
-        }
-        // 旧値がそのまま有効な場合は値を残す（clearContent しない）
-      }
-    }
-
-    // _cache はすでに新カテゴリで保存済み（getProductInfoFromUrl の自動保存）
-    Logger.log('[Spec] カテゴリ更新完了: ' + newCategoryId);
-    SpreadsheetApp.getActiveSpreadsheet().toast(
-      'カテゴリを更新しました（' + newCategoryId + ' / ' + newCategoryName + '）',
-      '✅ 完了', 3
-    );
-
-  } else {
-    // ── NO: シートのカテゴリはそのまま、_cache を既存カテゴリ+新スペックで上書き ──
-    saveCacheEntry(specUrl, {
-      category: {
-        categoryId:   existingCategoryId,
-        categoryName: existingCategoryName
-      },
-      specifics: newSpecifics
-    });
-    Logger.log('[Spec] カテゴリ変更なし、スペックのみキャッシュ保存: ' + specUrl);
-    SpreadsheetApp.getActiveSpreadsheet().toast(
-      'スペックをキャッシュに保存しました（カテゴリ変更なし）',
-      '✅ 完了', 3
     );
   }
 }
