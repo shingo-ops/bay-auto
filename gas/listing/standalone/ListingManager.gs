@@ -461,63 +461,103 @@ function convertPolicyNamesToIds(data, spreadsheetId) {
  * @param {Object} config getEbayConfig() の戻り値
  * @returns {string} eBay ConditionID
  */
-function resolveConditionIdFromMaster(conditionStr, config) {
-  if (!conditionStr || String(conditionStr).trim() === '') return '3000';
+/**
+ * ja_display → condition_id を4ステップで解決（フォールバックなし）
+ *
+ * 1. config.categoryMasterSpreadsheetId を取得
+ * 2. category_master_EBAY_US から categoryId の condition_group を取得
+ * 3. condition_ja_map から condition_group の ja_map_json を取得
+ * 4. ja_map_json を value→key で逆引きして condition_id を返す
+ *
+ * 解決できない場合は例外を throw（誤った condition_id での出品を防止）
+ *
+ * @param {string} conditionStr 状態列の値（ja_display）
+ * @param {Object} config       getEbayConfig() の戻り値
+ * @param {string} categoryId   出品カテゴリID
+ * @returns {string} eBay ConditionID
+ * @throws {Error} 解決できない場合
+ */
+function resolveConditionIdFromMaster(conditionStr, config, categoryId) {
+  if (!conditionStr || String(conditionStr).trim() === '') {
+    throw new Error('状態（コンディション）が入力されていません。');
+  }
   const str = String(conditionStr).trim();
 
-  // 1次: カテゴリマスタの condition_ja_map.ja_map_json から逆引き
-  try {
-    const masterSpreadsheetId = config.categoryMasterSpreadsheetId;
-    if (masterSpreadsheetId) {
-      const masterSs = SpreadsheetApp.openById(masterSpreadsheetId);
-      const sheet    = masterSs.getSheetByName('condition_ja_map');
-      if (sheet) {
-        const data    = sheet.getDataRange().getValues();
-        const headers = data[0];
-        const jaMapIdx = headers.indexOf('ja_map_json');
-        if (jaMapIdx !== -1) {
-          for (let i = 1; i < data.length; i++) {
-            let jaMap;
-            try { jaMap = JSON.parse(String(data[i][jaMapIdx] || '{}')); } catch (e) { continue; }
-            for (const id in jaMap) {
-              if (String(jaMap[id]) === str) {
-                Logger.log('condition_id 解決(master): "' + str + '" → ' + id);
-                return String(id);
-              }
-            }
-          }
-        }
-      }
+  // Step 0: 前提チェック
+  const masterSpreadsheetId = config.categoryMasterSpreadsheetId;
+  if (!masterSpreadsheetId) {
+    throw new Error('カテゴリマスタが設定されていません（ツール設定 > カテゴリマスタ）');
+  }
+  if (!categoryId || String(categoryId).trim() === '') {
+    throw new Error('カテゴリIDが設定されていません。');
+  }
+
+  const masterSs = SpreadsheetApp.openById(masterSpreadsheetId);
+
+  // Step 1: category_master_EBAY_US から condition_group を取得
+  const catSheet = masterSs.getSheetByName('category_master_EBAY_US');
+  if (!catSheet) throw new Error('category_master_EBAY_US シートが見つかりません');
+
+  const catData    = catSheet.getDataRange().getValues();
+  const catHeaders = catData[0];
+  const catIdIdx   = catHeaders.indexOf('category_id');
+  const groupIdx   = catHeaders.indexOf('condition_group');
+
+  if (catIdIdx === -1 || groupIdx === -1) {
+    throw new Error('category_master_EBAY_US に category_id / condition_group 列がありません');
+  }
+
+  let conditionGroup = null;
+  for (let i = 1; i < catData.length; i++) {
+    if (String(catData[i][catIdIdx]) === String(categoryId)) {
+      conditionGroup = String(catData[i][groupIdx] || '').trim();
+      break;
     }
-  } catch (e) {
-    Logger.log('⚠️ ja_map_json 検索エラー: ' + e.toString());
+  }
+  if (!conditionGroup) {
+    throw new Error('カテゴリID ' + categoryId + ' が category_master_EBAY_US に見つかりません');
   }
 
-  // 2次フォールバック: 固定マッピング（日本語 + 英語）
-  const fallback = {
-    '新品/未使用':          '1000',
-    'ほぼ新品':             '1500',
-    '目立った傷や汚れなし': '2750',
-    'やや傷や汚れあり':     '3000',
-    '傷や汚れあり':         '5000',
-    '全体的に状態が悪い':   '6000',
-    'ジャンク品':           '7000',
-    'New':                         '1000',
-    'New other (see details)':     '1500',
-    'Like New':                    '2750',
-    'Used':                        '3000',
-    'Very Good':                   '4000',
-    'Good':                        '5000',
-    'Acceptable':                  '6000',
-    'For parts or not working':    '7000'
-  };
-  if (fallback[str]) {
-    Logger.log('condition_id フォールバック(固定): "' + str + '" → ' + fallback[str]);
-    return fallback[str];
+  // Step 2: condition_ja_map から ja_map_json を取得
+  const jaSheet = masterSs.getSheetByName('condition_ja_map');
+  if (!jaSheet) throw new Error('condition_ja_map シートが見つかりません');
+
+  const jaData     = jaSheet.getDataRange().getValues();
+  const jaHeaders  = jaData[0];
+  const jaGroupIdx = jaHeaders.indexOf('condition_group');
+  const jaMapIdx   = jaHeaders.indexOf('ja_map_json');
+
+  if (jaGroupIdx === -1 || jaMapIdx === -1) {
+    throw new Error('condition_ja_map に condition_group / ja_map_json 列がありません');
   }
 
-  Logger.log('⚠️ condition_id が見つかりません: "' + str + '" → デフォルト3000');
-  return '3000';
+  let jaMap = null;
+  for (let i = 1; i < jaData.length; i++) {
+    if (String(jaData[i][jaGroupIdx]) === conditionGroup) {
+      try {
+        jaMap = JSON.parse(String(jaData[i][jaMapIdx] || '{}'));
+      } catch (e) {
+        throw new Error('ja_map_json のパースに失敗: ' + e.toString());
+      }
+      break;
+    }
+  }
+  if (!jaMap) {
+    throw new Error('condition_group "' + conditionGroup + '" が condition_ja_map に見つかりません');
+  }
+
+  // Step 3: ja_map_json を value→key で逆引き
+  for (const id in jaMap) {
+    if (String(jaMap[id]) === str) {
+      Logger.log('condition_id 解決: "' + str + '" → ' + id + ' (category=' + categoryId + ', group=' + conditionGroup + ')');
+      return String(id);
+    }
+  }
+
+  throw new Error(
+    '状態 "' + str + '" が condition_group "' + conditionGroup + '" の ja_map_json に見つかりません。\n' +
+    '利用可能な状態: ' + Object.values(jaMap).filter(Boolean).join('、')
+  );
 }
 
 /**
@@ -730,7 +770,7 @@ function addItemWithTradingApi(listingData, policyIds) {
     '<Description><![CDATA[' + (listingData.description || '') + ']]></Description>' +
     '<PrimaryCategory><CategoryID>' + listingData.categoryId + '</CategoryID></PrimaryCategory>' +
     '<StartPrice>' + listingData.price + '</StartPrice>' +
-    '<ConditionID>' + resolveConditionIdFromMaster(listingData.condition, config) + '</ConditionID>' +
+    '<ConditionID>' + resolveConditionIdFromMaster(listingData.condition, config, listingData.categoryId) + '</ConditionID>' +
     '<Country>JP</Country>' +
     '<Currency>USD</Currency>' +
     '<DispatchTimeMax>3</DispatchTimeMax>' +
