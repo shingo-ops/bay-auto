@@ -303,13 +303,13 @@ function getConditionIdByJaDisplay(categoryId, jaDisplay) {
 function updateCondition3000ToChukuhin() {
   const categoryMasterSs = openCategoryMasterSs();
   if (!categoryMasterSs) {
-    SpreadsheetApp.getUi().alert('カテゴリマスタスプレッドシートが開けません。ツール設定を確認してください。');
+    Logger.log('[updateCondition3000] カテゴリマスタが開けません');
     return;
   }
 
   const sheet = categoryMasterSs.getSheetByName(SHEET_NAMES.CONDITION_JA_MAP);
   if (!sheet) {
-    SpreadsheetApp.getUi().alert(SHEET_NAMES.CONDITION_JA_MAP + ' シートが見つかりません');
+    Logger.log('[updateCondition3000] ' + SHEET_NAMES.CONDITION_JA_MAP + ' シートが見つかりません');
     return;
   }
 
@@ -319,7 +319,7 @@ function updateCondition3000ToChukuhin() {
   const jaMapIdx  = headers.indexOf('ja_map_json');
 
   if (groupIdx === -1 || jaMapIdx === -1) {
-    SpreadsheetApp.getUi().alert('condition_group または ja_map_json 列が見つかりません');
+    Logger.log('[updateCondition3000] condition_group または ja_map_json 列が見つかりません');
     return;
   }
 
@@ -337,7 +337,7 @@ function updateCondition3000ToChukuhin() {
     try {
       jaMap = JSON.parse(jaMapJson);
     } catch (e) {
-      Logger.log('パースエラー (行' + (i + 1) + '): ' + e);
+      Logger.log('[updateCondition3000] パースエラー (行' + (i + 1) + '): ' + e);
       continue;
     }
 
@@ -350,10 +350,9 @@ function updateCondition3000ToChukuhin() {
     }
   }
 
-  const message = log.length > 0
-    ? '更新完了（' + log.length + '件）:\n\n' + log.join('\n')
+  const summary = log.length > 0
+    ? '更新完了（' + log.length + '件）: ' + log.join(' / ')
     : '更新対象なし（グループA〜Dに "3000" キーが見つかりませんでした）';
-
-  Logger.log('[updateCondition3000] ' + message);
-  SpreadsheetApp.getUi().alert(message);
+  Logger.log('[updateCondition3000] ' + summary);
+  return summary;
 }
