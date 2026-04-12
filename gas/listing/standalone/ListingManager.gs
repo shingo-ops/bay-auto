@@ -647,6 +647,8 @@ function setupSellerInfo(spreadsheetId) {
 
 /**
  * Trading API: EndFixedPriceItem（出品取り下げ）
+ * AddItem で出品された場合は EndFixedPriceItem が 'Input data is invalid' を返すため、
+ * そのときは EndItem にフォールバックする。
  *
  * @param {string} spreadsheetId
  * @param {string} itemId  eBay Item ID
@@ -664,7 +666,8 @@ function endFixedPriceItem(spreadsheetId, itemId) {
     const config = getEbayConfig();
     const apiUrl = getTradingApiUrl();
 
-    const xmlBody =
+    // --- EndFixedPriceItem を試行 ---
+    const xmlBodyFPI =
       '<?xml version="1.0" encoding="utf-8"?>' +
       '<EndFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">' +
         '<RequesterCredentials>' +
@@ -674,47 +677,98 @@ function endFixedPriceItem(spreadsheetId, itemId) {
         '<EndingReason>NotAvailable</EndingReason>' +
       '</EndFixedPriceItemRequest>';
 
-    const response   = UrlFetchApp.fetch(apiUrl, {
-      method: 'post',
-      headers: {
+    const buildHeaders = function(callName) {
+      return {
         'X-EBAY-API-SITEID':              '0',
         'X-EBAY-API-COMPATIBILITY-LEVEL': TRADING_API_VERSION,
-        'X-EBAY-API-CALL-NAME':           'EndFixedPriceItem',
+        'X-EBAY-API-CALL-NAME':           callName,
         'X-EBAY-API-APP-NAME':            config.appId,
         'X-EBAY-API-DEV-NAME':            config.devId,
         'X-EBAY-API-CERT-NAME':           config.certId,
         'Content-Type':                   'text/xml;charset=utf-8'
-      },
-      payload: xmlBody,
+      };
+    };
+
+    const responseFPI = UrlFetchApp.fetch(apiUrl, {
+      method: 'post',
+      headers: buildHeaders('EndFixedPriceItem'),
+      payload: xmlBodyFPI,
       muteHttpExceptions: true
     });
 
-    const statusCode   = response.getResponseCode();
-    const responseText = response.getContentText();
-    Logger.log('EndFixedPriceItem Response Code: ' + statusCode);
+    const statusFPI  = responseFPI.getResponseCode();
+    const textFPI    = responseFPI.getContentText();
+    Logger.log('EndFixedPriceItem Response Code: ' + statusFPI);
 
-    if (statusCode !== 200) {
-      throw new Error('HTTPエラー(' + statusCode + ')');
+    if (statusFPI === 200) {
+      const rootFPI  = XmlService.parse(textFPI).getRootElement();
+      const ns       = XmlService.getNamespace('urn:ebay:apis:eBLBaseComponents');
+      const ackFPI   = (rootFPI.getChild('Ack', ns) || { getText: function() { return ''; } }).getText();
+
+      if (ackFPI === 'Success' || ackFPI === 'Warning') {
+        Logger.log('✅ EndFixedPriceItem 成功: Item ID=' + itemId);
+        return { success: true };
+      }
+
+      // 'Input data is invalid' → AddItem 出品なので EndItem にフォールバック
+      const errElFPI  = rootFPI.getChild('Errors', ns);
+      const shortMsg  = errElFPI
+        ? (errElFPI.getChild('ShortMessage', ns) || { getText: function() { return ''; } }).getText()
+        : '';
+      Logger.log('EndFixedPriceItem 失敗: ' + shortMsg + ' → EndItem にフォールバック');
+
+      if (shortMsg.indexOf('Input data is invalid') === -1 && shortMsg !== '') {
+        // Input data is invalid 以外のエラーはフォールバックせずそのままエラーにする
+        throw new Error('APIエラー: ' + shortMsg);
+      }
+    } else {
+      Logger.log('EndFixedPriceItem HTTPエラー(' + statusFPI + ') → EndItem にフォールバック');
     }
 
-    const root = XmlService.parse(responseText).getRootElement();
-    const ns   = XmlService.getNamespace('urn:ebay:apis:eBLBaseComponents');
-    const ackEl = root.getChild('Ack', ns);
-    const ack   = ackEl ? ackEl.getText() : '';
+    // --- EndItem にフォールバック ---
+    Logger.log('=== EndItem フォールバック ===');
+    const xmlBodyEI =
+      '<?xml version="1.0" encoding="utf-8"?>' +
+      '<EndItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">' +
+        '<RequesterCredentials>' +
+          '<eBayAuthToken>' + escapeXml(token) + '</eBayAuthToken>' +
+        '</RequesterCredentials>' +
+        '<ItemID>' + escapeXml(String(itemId)) + '</ItemID>' +
+        '<EndingReason>NotAvailable</EndingReason>' +
+      '</EndItemRequest>';
 
-    if (ack === 'Success' || ack === 'Warning') {
-      Logger.log('✅ EndFixedPriceItem 成功: Item ID=' + itemId);
+    const responseEI   = UrlFetchApp.fetch(apiUrl, {
+      method: 'post',
+      headers: buildHeaders('EndItem'),
+      payload: xmlBodyEI,
+      muteHttpExceptions: true
+    });
+
+    const statusEI  = responseEI.getResponseCode();
+    const textEI    = responseEI.getContentText();
+    Logger.log('EndItem Response Code: ' + statusEI);
+
+    if (statusEI !== 200) {
+      throw new Error('EndItem HTTPエラー(' + statusEI + ')');
+    }
+
+    const rootEI = XmlService.parse(textEI).getRootElement();
+    const nsEI   = XmlService.getNamespace('urn:ebay:apis:eBLBaseComponents');
+    const ackEI  = (rootEI.getChild('Ack', nsEI) || { getText: function() { return ''; } }).getText();
+
+    if (ackEI === 'Success' || ackEI === 'Warning') {
+      Logger.log('✅ EndItem 成功: Item ID=' + itemId);
       return { success: true };
     }
 
-    const errEl = root.getChild('Errors', ns);
-    const errMsg = errEl
-      ? (errEl.getChild('ShortMessage', ns) || { getText: function() { return ''; } }).getText()
-      : responseText;
-    throw new Error('APIエラー: ' + errMsg);
+    const errElEI = rootEI.getChild('Errors', nsEI);
+    const errMsgEI = errElEI
+      ? (errElEI.getChild('ShortMessage', nsEI) || { getText: function() { return ''; } }).getText()
+      : textEI;
+    throw new Error('EndItem APIエラー: ' + errMsgEI);
 
   } catch (e) {
-    Logger.log('❌ EndFixedPriceItem エラー: ' + e.toString());
+    Logger.log('❌ endFixedPriceItem エラー: ' + e.toString());
     return { success: false, message: e.toString() };
   } finally {
     CURRENT_SPREADSHEET_ID = null;
@@ -888,7 +942,7 @@ function escapeXml(str) {
 }
 
 /**
- * Trading API: AddItem（出品作成）
+ * Trading API: AddFixedPriceItem（出品作成）
  *
  * @param {Object} listingData 出品データ
  * @param {Object} policyIds ポリシーID
@@ -901,7 +955,7 @@ function addItemWithTradingApi(listingData, policyIds) {
 
   // XMLリクエストボディ構築
   let xmlBody = '<?xml version="1.0" encoding="utf-8"?>' +
-    '<AddItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">' +
+    '<AddFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">' +
     '<RequesterCredentials>' +
     '<eBayAuthToken>' + escapeXml(token) + '</eBayAuthToken>' +
     '</RequesterCredentials>' +
@@ -1014,7 +1068,7 @@ function addItemWithTradingApi(listingData, policyIds) {
   }
 
   xmlBody += '</Item>' +
-    '</AddItemRequest>';
+    '</AddFixedPriceItemRequest>';
 
   // HTTPリクエスト
   const options = {
@@ -1022,7 +1076,7 @@ function addItemWithTradingApi(listingData, policyIds) {
     headers: {
       'X-EBAY-API-SITEID': '0',
       'X-EBAY-API-COMPATIBILITY-LEVEL': TRADING_API_VERSION,
-      'X-EBAY-API-CALL-NAME': 'AddItem',
+      'X-EBAY-API-CALL-NAME': 'AddFixedPriceItem',
       'X-EBAY-API-APP-NAME': config.appId,
       'X-EBAY-API-DEV-NAME': config.devId,
       'X-EBAY-API-CERT-NAME': config.certId,
@@ -1032,7 +1086,7 @@ function addItemWithTradingApi(listingData, policyIds) {
     muteHttpExceptions: true
   };
 
-  Logger.log('=== Trading API: AddItem ===');
+  Logger.log('=== Trading API: AddFixedPriceItem ===');
   Logger.log('API URL: ' + apiUrl);
   Logger.log('SKU: ' + listingData.sku);
 
