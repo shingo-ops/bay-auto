@@ -454,24 +454,56 @@ function convertPolicyNamesToIds(data, spreadsheetId) {
  * @param {string} conditionStr "状態"列の値
  * @returns {string} eBay ConditionID
  */
-function mapConditionId(conditionStr) {
-  const mapping = {
-    'New': '1000',
-    'Used': '3000',
-    'Like New': '1500',
-    'Very Good': '4000',
-    'Good': '5000',
-    'Acceptable': '6000'
-  };
+/**
+ * ja_display から condition_id を解決（カテゴリマスタの ja_map_json を逆引き）
+ *
+ * @param {string} conditionStr 状態列の値（ja_display）
+ * @param {Object} config getEbayConfig() の戻り値
+ * @returns {string} eBay ConditionID
+ */
+function resolveConditionIdFromMaster(conditionStr, config) {
+  try {
+    if (!conditionStr || String(conditionStr).trim() === '') return '3000';
+    const str = String(conditionStr).trim();
 
-  const mapped = mapping[conditionStr];
+    const masterSpreadsheetId = config.categoryMasterSpreadsheetId;
+    if (!masterSpreadsheetId) {
+      Logger.log('⚠️ categoryMasterSpreadsheetId 未設定。デフォルト3000を使用');
+      return '3000';
+    }
 
-  if (!mapped) {
-    Logger.log('⚠️ 状態値が不明です（' + conditionStr + '）。デフォルト値3000(Used)を使用します。');
-    return '3000'; // デフォルト: Used
+    const masterSs = SpreadsheetApp.openById(masterSpreadsheetId);
+    const sheet = masterSs.getSheetByName('condition_ja_map');
+    if (!sheet) {
+      Logger.log('⚠️ condition_ja_map シートが見つかりません。デフォルト3000を使用');
+      return '3000';
+    }
+
+    const data    = sheet.getDataRange().getValues();
+    const headers = data[0];
+    const jaMapIdx = headers.indexOf('ja_map_json');
+    if (jaMapIdx === -1) {
+      Logger.log('⚠️ ja_map_json 列が見つかりません。デフォルト3000を使用');
+      return '3000';
+    }
+
+    for (let i = 1; i < data.length; i++) {
+      let jaMap;
+      try { jaMap = JSON.parse(String(data[i][jaMapIdx] || '{}')); } catch (e) { continue; }
+      for (const id in jaMap) {
+        if (String(jaMap[id]) === str) {
+          Logger.log('condition_id 解決: "' + str + '" → ' + id);
+          return String(id);
+        }
+      }
+    }
+
+    Logger.log('⚠️ condition_id が見つかりません: "' + str + '" → デフォルト3000');
+    return '3000';
+  } catch (e) {
+    Logger.log('⚠️ resolveConditionIdFromMaster エラー: ' + e.toString());
+    return '3000';
   }
-
-  return mapped;
 }
 
 /**
@@ -559,6 +591,98 @@ function setupSellerInfo(spreadsheetId) {
   }
 }
 
+/**
+ * Trading API: EndFixedPriceItem（出品取り下げ）
+ *
+ * @param {string} spreadsheetId
+ * @param {string} itemId  eBay Item ID
+ * @returns {{ success: boolean, message?: string }}
+ */
+function endFixedPriceItem(spreadsheetId, itemId) {
+  try {
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+
+    autoRefreshTokenIfNeeded(spreadsheetId);
+
+    const token  = getUserToken();
+    const config = getEbayConfig();
+    const apiUrl = getTradingApiUrl();
+
+    const xmlBody =
+      '<?xml version="1.0" encoding="utf-8"?>' +
+      '<EndFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">' +
+        '<RequesterCredentials>' +
+          '<eBayAuthToken>' + escapeXml(token) + '</eBayAuthToken>' +
+        '</RequesterCredentials>' +
+        '<ItemID>' + escapeXml(String(itemId)) + '</ItemID>' +
+        '<EndingReason>NotAvailable</EndingReason>' +
+      '</EndFixedPriceItemRequest>';
+
+    const response   = UrlFetchApp.fetch(apiUrl, {
+      method: 'post',
+      headers: {
+        'X-EBAY-API-SITEID':              '0',
+        'X-EBAY-API-COMPATIBILITY-LEVEL': TRADING_API_VERSION,
+        'X-EBAY-API-CALL-NAME':           'EndFixedPriceItem',
+        'X-EBAY-API-APP-NAME':            config.appId,
+        'X-EBAY-API-DEV-NAME':            config.devId,
+        'X-EBAY-API-CERT-NAME':           config.certId,
+        'Content-Type':                   'text/xml;charset=utf-8'
+      },
+      payload: xmlBody,
+      muteHttpExceptions: true
+    });
+
+    const statusCode   = response.getResponseCode();
+    const responseText = response.getContentText();
+    Logger.log('EndFixedPriceItem Response Code: ' + statusCode);
+
+    if (statusCode !== 200) {
+      throw new Error('HTTPエラー(' + statusCode + ')');
+    }
+
+    const root = XmlService.parse(responseText).getRootElement();
+    const ns   = XmlService.getNamespace('urn:ebay:apis:eBLBaseComponents');
+    const ackEl = root.getChild('Ack', ns);
+    const ack   = ackEl ? ackEl.getText() : '';
+
+    if (ack === 'Success' || ack === 'Warning') {
+      Logger.log('✅ EndFixedPriceItem 成功: Item ID=' + itemId);
+      return { success: true };
+    }
+
+    const errEl = root.getChild('Errors', ns);
+    const errMsg = errEl
+      ? (errEl.getChild('ShortMessage', ns) || { getText: function() { return ''; } }).getText()
+      : responseText;
+    throw new Error('APIエラー: ' + errMsg);
+
+  } catch (e) {
+    Logger.log('❌ EndFixedPriceItem エラー: ' + e.toString());
+    return { success: false, message: e.toString() };
+  } finally {
+    CURRENT_SPREADSHEET_ID = null;
+  }
+}
+
+/**
+ * 出品DBのスプレッドシートIDを返す
+ *
+ * @param {string} spreadsheetId 出品元スプレッドシートID
+ * @returns {string|null}
+ */
+function getOutputDbSpreadsheetId(spreadsheetId) {
+  try {
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+    const config = getEbayConfig();
+    return config.outputDbSpreadsheetId || null;
+  } catch (e) {
+    return null;
+  } finally {
+    CURRENT_SPREADSHEET_ID = null;
+  }
+}
+
 function escapeXml(str) {
   if (!str) return '';
   return String(str)
@@ -592,7 +716,7 @@ function addItemWithTradingApi(listingData, policyIds) {
     '<Description><![CDATA[' + (listingData.description || '') + ']]></Description>' +
     '<PrimaryCategory><CategoryID>' + listingData.categoryId + '</CategoryID></PrimaryCategory>' +
     '<StartPrice>' + listingData.price + '</StartPrice>' +
-    '<ConditionID>' + mapConditionId(listingData.condition) + '</ConditionID>' +
+    '<ConditionID>' + resolveConditionIdFromMaster(listingData.condition, config) + '</ConditionID>' +
     '<Country>JP</Country>' +
     '<Currency>USD</Currency>' +
     '<DispatchTimeMax>3</DispatchTimeMax>' +
@@ -973,13 +1097,13 @@ function transferToOutputDb(spreadsheetId, rowNumber, listingData, result) {
       Logger.log('⚠️ "出品URL"列が見つかりません');
     }
 
-    // 出品ステータスを"出品中"に設定
-    const statusCol = headerMapping['出品ステータス'];
+    // 出品ステータスを"出品中"に設定（列名ゆれに対応）
+    const statusCol = headerMapping['出品ステータス'] || headerMapping['ステータス'];
     if (statusCol) {
       rowData[statusCol - 1] = '出品中';
       Logger.log('ステータスを設定: 出品中');
     } else {
-      Logger.log('⚠️ "ステータス"列が見つかりません');
+      Logger.log('⚠️ "出品ステータス"/"ステータス"列が見つかりません');
     }
 
     // 現在日時を取得
@@ -1108,8 +1232,8 @@ function clearAndMoveListingRow(spreadsheetId, rowNumber) {
     }
 
   } catch (error) {
-    Logger.log('❌ 行クリア・移動エラー: ' + error.toString());
-    throw error;
+    // 行移動エラーは非致命的（出品自体は成功）→ ログのみ
+    Logger.log('⚠️ 行クリア・移動エラー（出品は成功済み）: ' + error.toString());
   } finally {
     CURRENT_SPREADSHEET_ID = null;
   }
