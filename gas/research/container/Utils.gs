@@ -738,7 +738,7 @@ function getListingSheetHeaders() {
       return { error: '出品シートが見つかりません' };
     }
 
-    // ヘッダー行を取得（4行目）
+    // ヘッダー行を取得（1行目）
     const headerRow = LISTING_ROWS.HEADER;
     const lastCol = listingSheet.getLastColumn();
     const headers = listingSheet.getRange(headerRow, 1, 1, lastCol).getValues()[0];
@@ -789,7 +789,7 @@ function diagnoseListingLastRow() {
     if (!listingSheet) return 'ERROR: 出品シートが見つかりません';
 
     const lastCol = listingSheet.getLastColumn();
-    const headers = listingSheet.getRange(3, 1, 1, lastCol).getValues()[0];
+    const headers = listingSheet.getRange(LISTING_ROWS.HEADER, 1, 1, lastCol).getValues()[0];
 
     // ヘッダー→列番号マップ
     const hmap = {};
@@ -804,13 +804,14 @@ function diagnoseListingLastRow() {
     // SKU列で最後にデータがある行を後ろから検索（getLastRowはフォーマットのみの行を含む場合があるため）
     let targetRow = -1;
     if (skuCol) {
-      // SKU列の全データを一括取得（4行目から）
+      // SKU列の全データを一括取得（データ開始行から）
+      const dataStart = LISTING_ROWS.DATA_START;
       const sheetLastRow = listingSheet.getLastRow();
-      if (sheetLastRow >= 4) {
-        const skuColData = listingSheet.getRange(4, skuCol, sheetLastRow - 3, 1).getValues();
+      if (sheetLastRow >= dataStart) {
+        const skuColData = listingSheet.getRange(dataStart, skuCol, sheetLastRow - dataStart + 1, 1).getValues();
         for (let r = skuColData.length - 1; r >= 0; r--) {
           if (skuColData[r][0] !== '' && skuColData[r][0] !== null) {
-            targetRow = r + 4; // 4行目が index 0
+            targetRow = r + dataStart;
             break;
           }
         }
@@ -818,7 +819,8 @@ function diagnoseListingLastRow() {
     }
     // SKUで見つからなければ getLastRow() を使用
     const lastRow = targetRow > 0 ? targetRow : listingSheet.getLastRow();
-    const rowData = lastRow >= 4
+    const dataStart2 = LISTING_ROWS.DATA_START;
+    const rowData = lastRow >= dataStart2
       ? listingSheet.getRange(lastRow, 1, 1, lastCol).getValues()[0]
       : [];
 
@@ -927,9 +929,9 @@ function diagnoseListingHeaders() {
       return 'ERROR: シート「' + SHEET_NAMES.LISTING + '」が見つかりません';
     }
 
-    // 実際のヘッダーを取得（3行目）
+    // 実際のヘッダーを取得
     const lastCol = listingSheet.getLastColumn();
-    const actualHeaders = listingSheet.getRange(3, 1, 1, lastCol).getValues()[0];
+    const actualHeaders = listingSheet.getRange(LISTING_ROWS.HEADER, 1, 1, lastCol).getValues()[0];
 
     // ヘッダー名→列番号マップ
     const actualMap = {};
@@ -990,7 +992,7 @@ function diagnoseListingHeaders() {
 
     const lines = [
       '=== 出品シートヘッダー診断 ===',
-      'シート: ' + SHEET_NAMES.LISTING + ' / ヘッダー行: 3行目 / 総列数: ' + lastCol,
+      'シート: ' + SHEET_NAMES.LISTING + ' / ヘッダー行: 1行目 / 総列数: ' + lastCol,
       '',
       '--- FOUND (' + foundList.length + '件) ---'
     ].concat(foundList).concat([
@@ -1020,7 +1022,7 @@ function cleanupOrphanedSkuRows() {
     if (!sheet) return 'ERROR: 出品シートが見つかりません';
 
     const lastCol = sheet.getLastColumn();
-    const headers = sheet.getRange(3, 1, 1, lastCol).getValues()[0];
+    const headers = sheet.getRange(LISTING_ROWS.HEADER, 1, 1, lastCol).getValues()[0];
     const hmap = {};
     for (let i = 0; i < headers.length; i++) {
       const h = String(headers[i]).trim();
@@ -1032,10 +1034,11 @@ function cleanupOrphanedSkuRows() {
     const itemUrlIdx = hmap[LISTING_COLUMNS.ITEM_URL.header];
     if (skuIdx === undefined) return 'ERROR: SKU列が見つかりません';
 
+    const dataStart = LISTING_ROWS.DATA_START;
     const sheetLastRow = sheet.getLastRow();
-    if (sheetLastRow < 4) return '削除対象なし';
+    if (sheetLastRow < dataStart) return '削除対象なし';
 
-    const allData = sheet.getRange(4, 1, sheetLastRow - 3, lastCol).getValues();
+    const allData = sheet.getRange(dataStart, 1, sheetLastRow - dataStart + 1, lastCol).getValues();
     const rowsToDelete = [];
 
     for (let r = allData.length - 1; r >= 0; r--) {
@@ -1167,7 +1170,7 @@ function readListingSheetRows() {
     if (!sheet) return 'ERROR: 出品シートが見つかりません';
 
     const lastCol = sheet.getLastColumn();
-    const headers = sheet.getRange(3, 1, 1, lastCol).getValues()[0];
+    const headers = sheet.getRange(LISTING_ROWS.HEADER, 1, 1, lastCol).getValues()[0];
     const hmap = {};
     for (let i = 0; i < headers.length; i++) {
       const h = String(headers[i]).trim();
@@ -1186,10 +1189,11 @@ function readListingSheetRows() {
       LISTING_COLUMNS.SELLING_PRICE.header
     ];
 
-    // 行4から最終行まで読む
+    // データ開始行から最終行まで読む
+    const dataStart3 = LISTING_ROWS.DATA_START;
     const sheetLastRow = sheet.getLastRow();
-    const dataRows = sheetLastRow >= 4
-      ? sheet.getRange(4, 1, sheetLastRow - 3, lastCol).getValues()
+    const dataRows = sheetLastRow >= dataStart3
+      ? sheet.getRange(dataStart3, 1, sheetLastRow - dataStart3 + 1, lastCol).getValues()
       : [];
 
     const lines = [

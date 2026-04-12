@@ -135,12 +135,12 @@ const RESEARCH_ROWS = {
 // ========================================
 
 const LISTING_ROWS = {
-  HEADER: 3,       // ヘッダー行（clasp run inspectListingSheetRows で確認）
-  DATA_START: 4    // データ開始行
+  HEADER: 1,       // ヘッダー行（1行目）
+  DATA_START: 2    // データ開始行
 };
 
 // メインシートの列定義（126列 - SKU列追加+担当者列5つ追加により+6）
-// ヘッダー行: 3行目（2行目削除により変更）
+// ヘッダー行: 1行目
 // 注意: ヘッダー名ベースの動的マッピングを使用しているため、列位置が変わっても自動対応
 const LISTING_COLUMNS = {
   LISTING_URL: { header: '出品URL' },

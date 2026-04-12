@@ -16,7 +16,7 @@
  * @returns {number} 空白行の行番号
  */
 function findEmptyRowInColumn(sheet, columnNumber) {
-  const dataStartRow = LISTING_ROWS.DATA_START; // 5行目
+  const dataStartRow = LISTING_ROWS.DATA_START;
   const lastRow = sheet.getLastRow();
 
   // データ開始行から最終行+10まで検索（関数が入っている可能性を考慮）
@@ -125,7 +125,7 @@ function checkVeroAndProhibitedWords(title, listingSpreadsheet) {
  * @returns {Object} ヘッダー名をキー、列番号を値とするマッピングオブジェクト
  */
 function buildHeaderMapping(listingSheet) {
-  const headerRow = 3; // ヘッダー行（2行目削除により4→3に変更）
+  const headerRow = 1; // ヘッダー行（1列目に変更）
   const lastCol = listingSheet.getLastColumn();
   const headers = listingSheet.getRange(headerRow, 1, 1, lastCol).getValues()[0];
 
@@ -270,8 +270,8 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
         return;
       }
       // 必須列：列が見つからない場合はエラー
-      const errorMsg = '出品シートのヘッダー行（3行目）に「' + headerName + '」という列名が見つかりませんでした。\n\n' +
-                       '出品シートを開いて、3行目に「' + headerName + '」列があるか確認してください。\n' +
+      const errorMsg = '出品シートのヘッダー行（1行目）に「' + headerName + '」という列名が見つかりませんでした。\n\n' +
+                       '出品シートを開いて、1行目に「' + headerName + '」列があるか確認してください。\n' +
                        '※列名の前後に余計なスペースやタブがないかも確認してください。';
       Logger.log(errorMsg);
       throw new Error(errorMsg);
@@ -760,7 +760,7 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
                 Logger.log('画像' + (i + 1) + ': imageCol=' + imageCol + ', imageHeaderName=' + imageHeaderName);
 
                 if (!imageCol || imageCol === null || imageCol === undefined) {
-                  Logger.log('⚠️ 警告: 出品シートのヘッダー行（3行目）に「' + imageHeaderName + '」列が見つかりません。この画像の保存をスキップします。');
+                  Logger.log('⚠️ 警告: 出品シートのヘッダー行（1行目）に「' + imageHeaderName + '」列が見つかりません。この画像の保存をスキップします。');
                 } else {
                   listingSheet.getRange(newRow, imageCol).setValue(imageResult.driveUrl);
                   Logger.log('✅ 画像' + (i + 1) + 'を' + imageCol + '列目(' + imageHeaderName + ')に保存: ' + imageResult.driveUrl);
