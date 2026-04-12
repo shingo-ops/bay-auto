@@ -1326,7 +1326,7 @@ function transferToOutputDb(spreadsheetId, rowNumber, listingData, result) {
 
     if (!outputDbId || outputDbId === '') {
       Logger.log('⚠️ "出品DB"が設定されていません。転記をスキップします。');
-      return false;
+      return { success: false, error: '「ツール設定」シートの「出品DB」にスプレッドシートURLが設定されていません。' };
     }
 
     Logger.log('出品DB ID: ' + outputDbId);
@@ -1463,12 +1463,23 @@ function transferToOutputDb(spreadsheetId, rowNumber, listingData, result) {
 
     Logger.log('✅ 出品DB転記完了: ' + newRow + '行目に追加');
 
-    return true;
+    const missingCols = [];
+    outputHeaderRow.forEach(function(h) {
+      if (!h) return;
+      const specialFields = ['Item ID', '出品URL', '出品ステータス', 'ステータス', '出品タイムスタンプ', '管理年月'];
+      if (specialFields.indexOf(h) === -1 && !sourceHeaderMapping[h]) {
+        missingCols.push(h);
+      }
+    });
+    if (missingCols.length > 0) {
+      Logger.log('⚠️ 転記できなかった列: ' + missingCols.join(', '));
+    }
+    return { success: true, missingCols: missingCols };
 
   } catch (error) {
     Logger.log('❌ 出品DB転記エラー: ' + error.toString());
     // 転記エラーは致命的ではないので、エラーをログに記録して続行
-    return false;
+    return { success: false, error: error.toString() };
   } finally {
     CURRENT_SPREADSHEET_ID = null;
   }
@@ -1752,24 +1763,34 @@ function createListing(spreadsheetId, rowNumber) {
     // 6. 出品DBに転記
     const transferred = transferToOutputDb(spreadsheetId, rowNumber, listingData, result);
 
-    // 7. 出品シートからデータをクリアして行を最下部に移動（転記成功時のみ）
-    let rowCleared = false;
-    if (transferred) {
-      clearAndMoveListingRow(spreadsheetId, rowNumber);
-      rowCleared = true;
-    } else {
-      Logger.log('⚠️ 転記がスキップされたため、行クリア・移動も省略します');
-    }
+    // 7. DB転記結果を判定して行クリアまたはエラー返却
+    const dbSuccess = transferred && transferred.success === true;
+    const dbError   = transferred ? transferred.error : null;
+    const dbMissing = (transferred && transferred.missingCols) ? transferred.missingCols : [];
 
-    return {
-      success: true,
-      sku: listingData.sku,
-      itemId: result.itemId,
-      promotedListing: promotedListingResult,
-      transferred: transferred,
-      rowCleared: rowCleared,
-      veroWarning: String(listingData.wordCheck || '').trim() === 'VERO'
-    };
+    if (dbSuccess) {
+      clearAndMoveListingRow(spreadsheetId, rowNumber);
+      return {
+        success: true,
+        transferred: true,
+        missingCols: dbMissing,
+        sku: listingData.sku || '',
+        itemId: result.itemId || '',
+        promotedListing: promotedListingResult || null,
+        rowCleared: true
+      };
+    } else {
+      Logger.log('❌ DB転記失敗: ' + (dbError || '不明なエラー'));
+      return {
+        success: false,
+        transferred: false,
+        message: '⚠️ 出品は完了しましたが、DB転記に失敗しました。\n\n理由: ' + (dbError || '不明なエラー'),
+        sku: listingData.sku || '',
+        itemId: result.itemId || '',
+        promotedListing: promotedListingResult || null,
+        rowCleared: false
+      };
+    }
 
   } catch (error) {
     Logger.log('❌ 出品エラー: ' + error.toString());
@@ -1895,5 +1916,72 @@ function debugHeaderMapping() {
   } catch (error) {
     Logger.log('❌ デバッグエラー: ' + error.toString());
     return null;
+  }
+}
+
+/**
+ * transferToOutputDb() の単体テスト
+ * eBay出品なしで転記処理だけを確認する
+ * GASエディタから直接実行する
+ *
+ * Item IDが入っている最初の行（5行目以降）を自動検索して転記テストを実行する
+ */
+function testTransferToOutputDb() {
+  const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+
+  // 実際の出品シートからそのままデータを読む
+  const sourceSheet = getTargetSpreadsheet(spreadsheetId).getSheetByName(SHEET_NAMES.LISTING);
+  const srcLastCol = sourceSheet.getLastColumn();
+
+  // Item ID列を特定
+  const headerMapping = buildHeaderMapping();
+  const itemIdCol = headerMapping['Item ID'];
+  if (!itemIdCol) {
+    Logger.log('❌ "Item ID"列がヘッダー行に見つかりません');
+    return;
+  }
+
+  // 5行目以降でItem IDが入っている最初の行を自動検索
+  const lastRow = sourceSheet.getLastRow();
+  const itemIdValues = sourceSheet.getRange(5, itemIdCol, Math.max(lastRow - 4, 1), 1).getValues();
+  let testRow = null;
+  for (let i = 0; i < itemIdValues.length; i++) {
+    if (String(itemIdValues[i][0] || '').trim() !== '') {
+      testRow = i + 5; // 5行目始まり
+      break;
+    }
+  }
+
+  if (!testRow) {
+    Logger.log('❌ Item IDが入っている行が見つかりません（5行目以降を検索しました）');
+    return;
+  }
+
+  const listingData = sourceSheet.getRange(testRow, 1, 1, srcLastCol).getValues()[0];
+  const realItemId = String(sourceSheet.getRange(testRow, itemIdCol).getValue()).trim();
+
+  // 実際のItem IDで転記実行
+  const realResult = {
+    itemId: realItemId,
+    success: true
+  };
+
+  Logger.log('=== 転記テスト開始 ===');
+  Logger.log('対象行: ' + testRow + ' / Item ID: ' + realItemId);
+
+  const transferred = transferToOutputDb(spreadsheetId, testRow, listingData, realResult);
+
+  Logger.log('=== テスト結果 ===');
+  Logger.log(JSON.stringify(transferred));
+
+  if (transferred && transferred.success) {
+    Logger.log('✅ 転記成功');
+    if (transferred.missingCols && transferred.missingCols.length > 0) {
+      Logger.log('⚠️ 不一致列: ' + transferred.missingCols.join(', '));
+    } else {
+      Logger.log('✅ 全列マッチ');
+    }
+  } else {
+    Logger.log('❌ 転記失敗: ' + (transferred ? transferred.error : '不明'));
   }
 }
