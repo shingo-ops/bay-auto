@@ -346,23 +346,40 @@ function _buildSpecEntries(catData) {
 function _readCachedSpecs(ss, sheet, row, headerMap) {
   try {
     const cacheSheet = ss.getSheetByName('_cache');
-    if (!cacheSheet) return {};
+    if (!cacheSheet) {
+      Logger.log('_readCachedSpecs: _cache シートが見つかりません');
+      return {};
+    }
 
     const lastRow = cacheSheet.getLastRow();
-    if (lastRow < 2) return {};
+    if (lastRow < 2) {
+      Logger.log('_readCachedSpecs: _cache にデータがありません');
+      return {};
+    }
 
     const cacheHeaders = cacheSheet.getRange(1, 1, 1, cacheSheet.getLastColumn()).getValues()[0];
     const urlIdx   = cacheHeaders.indexOf('item_url');
     const specsIdx = cacheHeaders.indexOf('item_specs_json');
-    if (urlIdx === -1 || specsIdx === -1) return {};
+    Logger.log('_readCachedSpecs: _cache headers=' + JSON.stringify(cacheHeaders));
+    if (urlIdx === -1 || specsIdx === -1) {
+      Logger.log('_readCachedSpecs: item_url または item_specs_json 列が見つかりません');
+      return {};
+    }
 
     const cacheData = cacheSheet.getRange(2, 1, lastRow - 1, cacheHeaders.length).getValues();
+
+    // 出品シートのヘッダー一覧をログ出力（列名確認用）
+    Logger.log('_readCachedSpecs: headerMap keys=' + JSON.stringify(Object.keys(headerMap)));
 
     // 対象行の URL を取得（ItemURL → スペックURL の順）
     const urlCandidates = ['ItemURL', 'スペックURL'].map(function(h) {
       const col = headerMap[h];
-      return col ? String(sheet.getRange(row, col).getValue() || '') : '';
+      const val = col ? String(sheet.getRange(row, col).getValue() || '') : '';
+      Logger.log('_readCachedSpecs: ' + h + ' col=' + col + ' val=' + val);
+      return val;
     }).filter(function(u) { return u !== ''; });
+
+    Logger.log('_readCachedSpecs: urlCandidates=' + JSON.stringify(urlCandidates));
 
     const normalize = function(url) {
       return url.trim().split('?')[0].split('#')[0].replace(/\/$/, '').toLowerCase();
@@ -371,17 +388,21 @@ function _readCachedSpecs(ss, sheet, row, headerMap) {
     for (let ci = 0; ci < urlCandidates.length; ci++) {
       const target = normalize(urlCandidates[ci]);
       for (let ri = 0; ri < cacheData.length; ri++) {
-        if (normalize(String(cacheData[ri][urlIdx] || '')) === target) {
+        const cacheUrl = normalize(String(cacheData[ri][urlIdx] || ''));
+        if (cacheUrl === target) {
           const specsJson = String(cacheData[ri][specsIdx] || '{}');
+          Logger.log('_readCachedSpecs: キャッシュヒット row=' + (ri + 2));
           try {
             return JSON.parse(specsJson);
           } catch (e) {
+            Logger.log('_readCachedSpecs: item_specs_json パースエラー: ' + e.toString());
             return {};
           }
         }
       }
     }
 
+    Logger.log('_readCachedSpecs: キャッシュにURLが見つかりませんでした');
     return {};
   } catch (e) {
     Logger.log('_readCachedSpecs エラー: ' + e.toString());

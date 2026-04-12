@@ -37,7 +37,8 @@ function onOpen() {
     .addItem('更新', 'menuUpdateListing')
     .addToUi();
 
-  ui.createMenu('初回セットアップ')
+  ui.createMenu('⚙️')
+    .addItem('アカウント情報取得', 'menuFetchAccountInfo')
     .addItem('ポリシー取得', 'menuGetPolicies')
     .addItem('ポリシー更新', 'menuSyncPolicies')
     .addToUi();
@@ -60,6 +61,17 @@ function menuCreateListing() {
   if (row <= 3) {
     ui.alert('エラー', 'データ行（4行目以降）を選択してください。', ui.ButtonSet.OK);
     return;
+  }
+
+  // VEROチェック（出品前）
+  const wordCheck = EbayLib.getWordCheckValue(spreadsheetId, row);
+  if (wordCheck === 'VERO') {
+    const veroResponse = ui.alert(
+      '⚠️ VERO警告',
+      'このアイテムにVEROワードが含まれています。\neBayから削除申請が来る可能性があります。\n\n出品を続行しますか？',
+      ui.ButtonSet.OK_CANCEL
+    );
+    if (veroResponse !== ui.Button.OK) return;
   }
 
   const response = ui.alert(
@@ -106,6 +118,70 @@ function menuUpdateListing() {
   const result = EbayLib.menuUpdateListing(spreadsheetId, row);
   if (result.success) {
     ui.alert('更新完了', result.message, ui.ButtonSet.OK);
+  } else {
+    ui.alert('エラー', result.message, ui.ButtonSet.OK);
+  }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 初回セットアップ・ポリシー管理
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+function menuFetchAccountInfo() {
+  const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+  const ui = SpreadsheetApp.getUi();
+  const result = EbayLib.menuFetchAccountInfo(spreadsheetId);
+  if (result.success) {
+    ui.alert('アカウント情報取得完了', result.message, ui.ButtonSet.OK);
+  } else {
+    ui.alert('エラー', result.message, ui.ButtonSet.OK);
+  }
+}
+
+function menuSetupEbayManager() {
+  const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+  const ui = SpreadsheetApp.getUi();
+  const result = EbayLib.setupEbayManager(spreadsheetId);
+  if (result.success) {
+    ui.alert('セットアップ完了', result.message, ui.ButtonSet.OK);
+  } else {
+    ui.alert('エラー', result.message, ui.ButtonSet.OK);
+  }
+}
+
+function menuGetPolicies() {
+  const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert(
+    'ポリシー取得',
+    'eBayからポリシーを取得してシートを更新します。\n既存のデータは上書きされます。\n\n実行しますか？',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (response !== ui.Button.OK) return;
+  const result = EbayLib.menuGetPolicies(spreadsheetId);
+  if (result.success) {
+    ui.alert('取得完了', result.message, ui.ButtonSet.OK);
+  } else {
+    ui.alert('エラー', result.message, ui.ButtonSet.OK);
+  }
+}
+
+function menuSyncPolicies() {
+  const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert(
+    'ポリシー更新',
+    'シートの変更をeBayに反映します。\n\n' +
+    '- 操作列が「追加」→ 新規作成\n' +
+    '- 操作列が「更新」→ 更新\n' +
+    '- 操作列が「削除」→ 削除\n\n' +
+    '実行しますか？',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (response !== ui.Button.OK) return;
+  const result = EbayLib.menuSyncPolicies(spreadsheetId);
+  if (result.success) {
+    ui.alert('同期完了', result.message, ui.ButtonSet.OK);
   } else {
     ui.alert('エラー', result.message, ui.ButtonSet.OK);
   }

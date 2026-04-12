@@ -238,6 +238,30 @@ function extractImageUrls(rowData, headerMapping) {
 }
 
 /**
+ * 指定行のワード判定値を返す
+ *
+ * @param {string} spreadsheetId
+ * @param {number} rowNumber
+ * @returns {string} ワード判定の値（例: "VERO", "禁止ワード", "" など）
+ */
+function getWordCheckValue(spreadsheetId, rowNumber) {
+  try {
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+    const sheet = getTargetSpreadsheet().getSheetByName(SHEET_NAMES.LISTING);
+    if (!sheet) return '';
+    const headerMapping = getListingSheetHeaderMapping(spreadsheetId);
+    const col = headerMapping['ワード判定'];
+    if (!col) return '';
+    return String(sheet.getRange(rowNumber, col).getValue() || '').trim();
+  } catch (e) {
+    Logger.log('getWordCheckValue エラー: ' + e.toString());
+    return '';
+  } finally {
+    CURRENT_SPREADSHEET_ID = null;
+  }
+}
+
+/**
  * "出品"シートから指定行のデータを読み取り
  *
  * @param {string} spreadsheetId スプレッドシートID（省略時はデフォルト使用）
@@ -326,11 +350,7 @@ function validateListingData(data) {
     // 禁止ワードの場合は即座にエラーを返す
     return errors;
   }
-  if (wordCheckResult === 'VERO') {
-    errors.push('⛔ VEROワードが検出されました。この商品は出品できません（商標権侵害）。');
-    // VEROの場合も即座にエラーを返す
-    return errors;
-  }
+  // VERO は警告のみ（ブロックしない）
 
   // 必須フィールド
   if (!data.sku || String(data.sku).trim() === '') {
@@ -383,9 +403,9 @@ function validateListingData(data) {
  */
 function convertPolicyNamesToIds(data, spreadsheetId) {
   // PolicyManager.gsで定義されているgetPolicyIdByName()を使用
-  const shippingPolicyId = getPolicyIdByName(data.shippingPolicy, 'FULFILLMENT');
-  const returnPolicyId = getPolicyIdByName(data.returnPolicy, 'RETURN');
-  const paymentPolicyId = getPolicyIdByName(data.paymentPolicy, 'PAYMENT');
+  const shippingPolicyId = getPolicyIdByName(data.shippingPolicy, 'Fulfillment Policy');
+  const returnPolicyId = getPolicyIdByName(data.returnPolicy, 'Return Policy');
+  const paymentPolicyId = getPolicyIdByName(data.paymentPolicy, 'Payment Policy');
 
   if (!shippingPolicyId) {
     throw new Error('Shipping Policy "' + data.shippingPolicy + '" が見つかりません。先に「ポリシー取得（タイプ別）」を実行してください。');
@@ -480,6 +500,8 @@ function addItemWithTradingApi(listingData, policyIds) {
     '<DispatchTimeMax>3</DispatchTimeMax>' +
     '<ListingDuration>GTC</ListingDuration>' +
     '<ListingType>FixedPriceItem</ListingType>' +
+    '<Location>' + escapeXml(config.itemLocation) + '</Location>' +
+    (config.postalCode ? '<PostalCode>' + escapeXml(config.postalCode) + '</PostalCode>' : '') +
     '<PaymentMethods>PayPal</PaymentMethods>' +
     '<Quantity>' + parseInt(listingData.quantity) + '</Quantity>' +
     '<Site>US</Site>';
@@ -1052,7 +1074,8 @@ function createListing(spreadsheetId, rowNumber) {
       itemId: result.itemId,
       promotedListing: promotedListingResult,
       transferred: transferred,
-      rowCleared: rowCleared
+      rowCleared: rowCleared,
+      veroWarning: String(listingData.wordCheck || '').trim() === 'VERO'
     };
 
   } catch (error) {

@@ -263,8 +263,9 @@ function getConfig() {
     const key = data[i][0];   // A列: 項目名
     const value = data[i][1]; // B列: 値
 
-    // ヘッダー行をスキップ（"項目"というキーは設定として扱わない）
-    if (key === '項目' || key === 'Item' || key === 'Key') {
+    // ヘッダー行・セクションヘッダーをスキップ
+    if (key === '項目' || key === 'Item' || key === 'Key' ||
+        key === '【アカウント情報】' || key === '【出品デフォルト設定】') {
       Logger.log('ヘッダー行をスキップ: ' + key);
       continue;
     }
@@ -333,6 +334,8 @@ function getEbayConfig() {
     ruName: config['RuName'] || '',
     categoryMasterSpreadsheetId: extractSpreadsheetId(config['カテゴリマスタ']) || '',
     outputDbSpreadsheetId: extractSpreadsheetId(config['出品DB']) || '',
+    itemLocation: config['出品所在地'] || 'Japan',
+    postalCode:   config['郵便番号']   || '',
 
     // eBay APIエンドポイント（本番環境）
     getApiEndpoint: function() {
