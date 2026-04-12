@@ -60,8 +60,8 @@ function menuCreateListing() {
   }
 
   const row = sheet.getActiveRange().getRow();
-  if (row <= 3) {
-    ui.alert('エラー', 'データ行（4行目以降）を選択してください。', ui.ButtonSet.OK);
+  if (row <= 1) {
+    ui.alert('エラー', 'データ行（2行目以降）を選択してください。', ui.ButtonSet.OK);
     return;
   }
 
@@ -109,8 +109,8 @@ function menuReviseItem() {
   }
 
   const row = sheet.getActiveRange().getRow();
-  if (row <= 3) {
-    ui.alert('エラー', 'データ行（4行目以降）を選択してください。', ui.ButtonSet.OK);
+  if (row <= 1) {
+    ui.alert('エラー', 'データ行（2行目以降）を選択してください。', ui.ButtonSet.OK);
     return;
   }
 
@@ -165,8 +165,8 @@ function menuEndListing() {
   }
 
   const row = sheet.getActiveRange().getRow();
-  if (row <= 3) {
-    ui.alert('エラー', 'データ行（4行目以降）を選択してください。', ui.ButtonSet.OK);
+  if (row <= 1) {
+    ui.alert('エラー', 'データ行（2行目以降）を選択してください。', ui.ButtonSet.OK);
     return;
   }
 
@@ -307,8 +307,8 @@ function handleEdit(e) {
     // 出品シート以外は無視
     if (sheetName !== '出品') return;
 
-    // ヘッダー行（3行目まで）は無視
-    if (row <= 3) return;
+    // ヘッダー行（1行目）は無視
+    if (row <= 1) return;
 
     const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
 
@@ -566,14 +566,14 @@ function testGetPolicies() {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /**
- * 出品シートのヘッダーマッピングを構築（ヘッダー行=3行目）
+ * 出品シートのヘッダーマッピングを構築（ヘッダー行=1行目）
  * @param {Sheet} sheet
  * @returns {Object} {ヘッダー名: 列番号(1-based)}
  */
 function _buildListingHeaderMapping(sheet) {
   const lastCol = sheet.getLastColumn();
   if (lastCol === 0) return {};
-  const headers = sheet.getRange(3, 1, 1, lastCol).getValues()[0];
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
   const map = {};
   for (let i = 0; i < headers.length; i++) {
     const h = String(headers[i] || '').trim();

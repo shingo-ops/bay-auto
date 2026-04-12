@@ -17,7 +17,7 @@ const SPEC_COLOR_RECOMMENDED = '#1155CC'; // 推奨: 青
 const SPEC_COLOR_OPTIONAL    = '#666666'; // 任意: グレー
 
 // 出品シートのヘッダー行
-const LISTING_HEADER_ROW = 3;
+const LISTING_HEADER_ROW = 1;
 
 // スペック列の最大組数
 const MAX_SPEC_PAIRS = 30;

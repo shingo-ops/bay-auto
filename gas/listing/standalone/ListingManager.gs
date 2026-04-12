@@ -22,7 +22,7 @@ function getListingSheetHeaderMapping(spreadsheetId) {
     throw new Error('"出品"シートが見つかりません');
   }
 
-  // buildHeaderMapping()はConfig.gsで定義済み（3行目をヘッダーとして読み取り）
+  // buildHeaderMapping()はConfig.gsで定義済み（1行目をヘッダーとして読み取り）
   return buildHeaderMapping();
 }
 
@@ -265,7 +265,7 @@ function getWordCheckValue(spreadsheetId, rowNumber) {
  * "出品"シートから指定行のデータを読み取り
  *
  * @param {string} spreadsheetId スプレッドシートID（省略時はデフォルト使用）
- * @param {number} rowNumber 行番号（4行目以降）
+ * @param {number} rowNumber 行番号（2行目以降）
  * @returns {Object} 出品データ
  */
 function readListingDataFromSheet(spreadsheetId, rowNumber) {
@@ -1255,14 +1255,14 @@ function transferToOutputDb(spreadsheetId, rowNumber, listingData, result) {
       Logger.log('✅ "出品"シートを作成しました');
     }
 
-    // ヘッダー行が存在しない場合は作成（1行目: タイトル、2行目: 補足、3行目: ヘッダー）
+    // ヘッダー行が存在しない場合は作成（1行目: ヘッダー）
     const lastRow = outputSheet.getLastRow();
-    if (lastRow < 3) {
+    if (lastRow < 1) {
       // 元の"出品"シートからヘッダーをコピー
       const sourceSheet = getTargetSpreadsheet(spreadsheetId).getSheetByName(SHEET_NAMES.LISTING);
-      const sourceHeaders = sourceSheet.getRange(1, 1, 3, sourceSheet.getLastColumn()).getValues();
+      const sourceHeaders = sourceSheet.getRange(1, 1, 1, sourceSheet.getLastColumn()).getValues();
 
-      outputSheet.getRange(1, 1, 3, sourceHeaders[0].length).setValues(sourceHeaders);
+      outputSheet.getRange(1, 1, 1, sourceHeaders[0].length).setValues(sourceHeaders);
       Logger.log('✅ ヘッダー行をコピーしました');
     }
 
@@ -1272,8 +1272,8 @@ function transferToOutputDb(spreadsheetId, rowNumber, listingData, result) {
     const sourceValues = sourceSheet.getRange(rowNumber, 1, 1, srcLastCol).getValues()[0];
     const sourceHeaderMapping = buildHeaderMapping(); // 出品シート: 列名 → 1-based index
 
-    // 出品DBのヘッダー行（3行目）を取得
-    const outputHeaderRow = outputSheet.getRange(3, 1, 1, outputSheet.getLastColumn()).getValues()[0];
+    // 出品DBのヘッダー行（1行目）を取得
+    const outputHeaderRow = outputSheet.getRange(1, 1, 1, outputSheet.getLastColumn()).getValues()[0];
 
     // 出品DB列名 → 0-based index のマップ
     const outputColMap = {};
@@ -1362,13 +1362,13 @@ function transferToOutputDb(spreadsheetId, rowNumber, listingData, result) {
 
     // 実データが入っている最終行を特定（出品URL列で判定）
     const urlColInOutput = outputHeaderRow.indexOf('出品URL');
-    let newRow = 4;
+    let newRow = 2;
     if (urlColInOutput !== -1) {
       const colValues = outputSheet.getRange(1, urlColInOutput + 1, outputSheet.getLastRow(), 1).getValues();
       for (let i = colValues.length - 1; i >= 0; i--) {
         if (colValues[i][0] !== '') { newRow = i + 2; break; }
       }
-      if (newRow < 4) newRow = 4;
+      if (newRow < 2) newRow = 2;
     } else {
       newRow = outputSheet.getLastRow() + 1;
     }
@@ -1403,9 +1403,9 @@ function debugTransferHeaders(spreadsheetId) {
 
     // 出品シートヘッダー
     const sourceSheet = getTargetSpreadsheet().getSheetByName(SHEET_NAMES.LISTING);
-    const sourceHeaders = sourceSheet.getRange(3, 1, 1, sourceSheet.getLastColumn()).getValues()[0];
+    const sourceHeaders = sourceSheet.getRange(1, 1, 1, sourceSheet.getLastColumn()).getValues()[0];
 
-    Logger.log('=== 出品シート ヘッダー一覧（3行目）===');
+    Logger.log('=== 出品シート ヘッダー一覧（1行目）===');
     sourceHeaders.forEach(function(h, i) {
       if (h) Logger.log('  ' + (i + 1) + '列: ' + h);
     });
@@ -1422,9 +1422,9 @@ function debugTransferHeaders(spreadsheetId) {
       Logger.log('⚠️ 出品DBに「出品」シートが見つかりません');
       return;
     }
-    const outputHeaders = outputSheet.getRange(3, 1, 1, outputSheet.getLastColumn()).getValues()[0];
+    const outputHeaders = outputSheet.getRange(1, 1, 1, outputSheet.getLastColumn()).getValues()[0];
 
-    Logger.log('=== 出品DB ヘッダー一覧（3行目）===');
+    Logger.log('=== 出品DB ヘッダー一覧（1行目）===');
     outputHeaders.forEach(function(h, i) {
       if (h) Logger.log('  ' + (i + 1) + '列: ' + h);
     });
@@ -1473,9 +1473,9 @@ function clearAndMoveListingRow(spreadsheetId, rowNumber) {
       throw new Error('"出品"シートが見つかりません');
     }
 
-    // 4行目以降のみ処理可能（ヘッダー保護）
-    if (rowNumber < 4) {
-      throw new Error('ヘッダー行（1-3行目）は処理できません');
+    // 2行目以降のみ処理可能（ヘッダー保護）
+    if (rowNumber < 2) {
+      throw new Error('ヘッダー行（1行目）は処理できません');
     }
 
     // ヘッダーマッピングを取得してSKU列を特定
@@ -1494,9 +1494,9 @@ function clearAndMoveListingRow(spreadsheetId, rowNumber) {
 
     // SKUが入力されている最後尾の行を検索
     const lastRow = listingSheet.getLastRow();
-    let lastDataRow = 3; // 最低でも3行目（ヘッダー行）
+    let lastDataRow = 1; // 最低でも1行目（ヘッダー行）
 
-    for (let i = lastRow; i >= 4; i--) {
+    for (let i = lastRow; i >= 2; i--) {
       const skuValue = listingSheet.getRange(i, skuCol).getValue();
       if (skuValue && String(skuValue).trim() !== '') {
         lastDataRow = i;
@@ -1548,7 +1548,7 @@ function deleteListingRow(spreadsheetId, rowNumber) {
  * 出品実行（メイン関数）
  *
  * @param {string} spreadsheetId スプレッドシートID（省略時はデフォルト使用）
- * @param {number} rowNumber 出品する行番号（4行目以降）
+ * @param {number} rowNumber 出品する行番号（2行目以降）
  * @returns {Object} { success: boolean, sku: string, itemId: string, promotedListing?: Object, transferred: boolean, rowCleared: boolean }
  */
 function createListing(spreadsheetId, rowNumber) {
@@ -1650,8 +1650,8 @@ function processOnEdit(e, spreadsheetId) {
       return;
     }
 
-    // ヘッダー行（1-3行目）は処理しない
-    if (row <= 3) {
+    // ヘッダー行（1行目）は処理しない
+    if (row <= 1) {
       Logger.log('⚠️ ヘッダー行なのでスキップ');
       return;
     }

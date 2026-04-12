@@ -424,7 +424,7 @@ function buildHeaderMapping() {
     throw new Error('「' + SHEET_NAMES.LISTING + '」シートが見つかりません');
   }
 
-  const headerRow = 3; // ヘッダーは3行目
+  const headerRow = 1; // ヘッダーは1行目
   const lastCol = listingSheet.getLastColumn();
   const headers = listingSheet.getRange(headerRow, 1, 1, lastCol).getValues()[0];
 
