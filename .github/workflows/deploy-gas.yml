@@ -38,7 +38,7 @@ jobs:
             SCRIPT_ID="${{ secrets.LISTING_SA_DEV }}"
           fi
           sed -i "s/REPLACED_BY_CI/$SCRIPT_ID/" .clasp.json
-          clasp push --force --force
+          clasp push --force
 
   deploy-listing-container:
     runs-on: ubuntu-latest
