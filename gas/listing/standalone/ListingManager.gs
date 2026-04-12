@@ -524,26 +524,32 @@ function setupSellerInfo(spreadsheetId) {
       };
     }
 
+    // ハイフンなし7桁（例: 4442141）→ 自動フォーマット（444-2141）
+    const digitsOnly     = postalCode.replace(/-/g, '');
+    const normalizedCode = digitsOnly.length === 7
+      ? digitsOnly.slice(0, 3) + '-' + digitsOnly.slice(3)
+      : postalCode;
+
     // 日本の郵便番号フォーマット検証（XXX-XXXX）
-    if (!/^\d{3}-\d{4}$/.test(postalCode)) {
+    if (!/^\d{3}-\d{4}$/.test(normalizedCode)) {
       return {
         success: false,
         postalCode: postalCode,
         location: location,
-        message: '⚠️ 郵便番号のフォーマットが不正です（' + postalCode + '）。XXX-XXXX 形式で入力してください。'
+        message: '⚠️ 郵便番号のフォーマットが不正です（' + postalCode + '）。XXX-XXXX 形式（7桁）で入力してください。'
       };
     }
 
     const props = PropertiesService.getScriptProperties();
-    props.setProperty('POSTAL_CODE',   postalCode);
+    props.setProperty('POSTAL_CODE',   normalizedCode);
     props.setProperty('ITEM_LOCATION', location);
 
-    Logger.log('✅ setupSellerInfo: PostalCode=' + postalCode + ' Location=' + location);
+    Logger.log('✅ setupSellerInfo: PostalCode=' + normalizedCode + ' Location=' + location);
     return {
       success: true,
-      postalCode: postalCode,
+      postalCode: normalizedCode,
       location: location,
-      message: '✅ 出品者情報を保存しました\n郵便番号: ' + postalCode + '\n出品所在地: ' + location
+      message: '✅ 出品者情報を保存しました\n郵便番号: ' + normalizedCode + '\n出品所在地: ' + location
     };
   } catch (e) {
     Logger.log('❌ setupSellerInfo エラー: ' + e.toString());

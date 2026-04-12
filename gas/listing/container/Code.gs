@@ -33,7 +33,6 @@ function onOpen() {
   const ui = SpreadsheetApp.getUi();
 
   ui.createMenu('⚙️')
-    .addItem('アカウント情報取得', 'menuFetchAccountInfo')
     .addItem('出品者情報設定', 'menuSetupSellerInfo')
     .addItem('ポリシー取得', 'menuGetPolicies')
     .addItem('ポリシー更新', 'menuSyncPolicies')
@@ -127,17 +126,6 @@ function menuUpdateListing() {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 初回セットアップ・ポリシー管理
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-function menuFetchAccountInfo() {
-  const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
-  const ui = SpreadsheetApp.getUi();
-  const result = EbayLib.menuFetchAccountInfo(spreadsheetId);
-  if (result.success) {
-    ui.alert('アカウント情報取得完了', result.message, ui.ButtonSet.OK);
-  } else {
-    ui.alert('エラー', result.message, ui.ButtonSet.OK);
-  }
-}
 
 function menuSetupEbayManager() {
   const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
