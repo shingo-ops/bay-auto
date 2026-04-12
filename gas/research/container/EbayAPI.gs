@@ -493,6 +493,15 @@ function getProductInfoFromUrl(url) {
  */
 function getCategoryMasterData(categoryId) {
   try {
+    // CacheServiceで結果をキャッシュ（外部スプレッドシートアクセスを最小化）
+    const cacheKey = 'cat_master_' + categoryId;
+    const cache = CacheService.getScriptCache();
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      Logger.log('✅ getCategoryMasterData キャッシュヒット: ' + categoryId);
+      return JSON.parse(cached);
+    }
+
     // ツール設定からカテゴリマスタブックIDを取得
     const config = getEbayConfig();
     const categoryMasterSpreadsheetId = config.categoryMasterSpreadsheetId;
@@ -511,38 +520,54 @@ function getCategoryMasterData(categoryId) {
       return null;
     }
 
-    // カテゴリIDで検索（A列）
     const lastRow = sheet.getLastRow();
-    const categoryIds = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    const lastCol = sheet.getLastColumn();
 
-    let targetRow = -1;
-    for (let i = 0; i < categoryIds.length; i++) {
-      // カテゴリIDは文字列で保存されている可能性があるため、文字列比較
-      if (categoryIds[i][0].toString() === categoryId.toString()) {
-        targetRow = i + 2; // ヘッダー行を考慮
+    // ヘッダー行を取得して列インデックスを動的に解決（列順変更に対応）
+    const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    const colIdx = {
+      categoryId:           headers.indexOf('category_id'),
+      categoryName:         headers.indexOf('category_name'),
+      requiredSpecsJson:    headers.indexOf('required_specs_json'),
+      recommendedSpecsJson: headers.indexOf('recommended_specs_json'),
+      optionalSpecsJson:    headers.indexOf('optional_specs_json')
+    };
+
+    if (colIdx.categoryId === -1) {
+      Logger.log('category_master に category_id 列が見つかりません');
+      return null;
+    }
+
+    // 全データを一括取得してカテゴリIDで検索
+    const allData = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    let rowData = null;
+    for (let i = 0; i < allData.length; i++) {
+      if (allData[i][colIdx.categoryId].toString() === categoryId.toString()) {
+        rowData = allData[i];
         break;
       }
     }
 
-    if (targetRow === -1) {
+    if (!rowData) {
       Logger.log('カテゴリID ' + categoryId + ' がカテゴリマスタに見つかりません');
       return null;
     }
 
-    // カテゴリデータを取得
-    const rowData = sheet.getRange(targetRow, 1, 1, 7).getValues()[0];
-
     const categoryData = {
-      categoryId: rowData[0],
-      categoryName: rowData[1],
-      requiredAspects: JSON.parse(rowData[3] || '[]'),
-      recommendedAspects: JSON.parse(rowData[4] || '[]'),
-      optionalAspects: JSON.parse(rowData[5] || '[]')
+      categoryId:         rowData[colIdx.categoryId],
+      categoryName:       colIdx.categoryName !== -1         ? rowData[colIdx.categoryName]                          : '',
+      requiredAspects:    colIdx.requiredSpecsJson !== -1    ? JSON.parse(rowData[colIdx.requiredSpecsJson]    || '[]') : [],
+      recommendedAspects: colIdx.recommendedSpecsJson !== -1 ? JSON.parse(rowData[colIdx.recommendedSpecsJson] || '[]') : [],
+      optionalAspects:    colIdx.optionalSpecsJson !== -1    ? JSON.parse(rowData[colIdx.optionalSpecsJson]    || '[]') : []
     };
 
     Logger.log('カテゴリマスタデータ取得: ' + categoryData.categoryName);
     Logger.log('必須スペック: ' + categoryData.requiredAspects.length + '件');
     Logger.log('推奨スペック: ' + categoryData.recommendedAspects.length + '件');
+
+    // キャッシュに保存（6時間）
+    cache.put(cacheKey, JSON.stringify(categoryData), 21600);
+    Logger.log('✅ getCategoryMasterData キャッシュ保存: ' + categoryId);
 
     return categoryData;
 
