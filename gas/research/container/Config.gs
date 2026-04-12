@@ -264,7 +264,9 @@ const LISTING_COLUMNS = {
   QUANTITY: { header: '個数' },
   PURCHASE_PRICE: { header: '仕入値(¥)' },
   SELLING_PRICE: { header: '売値($)' },
-  BEST_OFFER: { header: 'Best offer' },
+  BEST_OFFER:        { header: 'Best offer' },
+  AUTO_ACCEPT_PRICE: { header: '承認価格' },
+  AUTO_DECLINE_PRICE: { header: '拒否価格' },
   LOWEST_PRICE_URL: { header: '検索URL' },
 
   // 利益関連

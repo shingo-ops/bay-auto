@@ -430,7 +430,12 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
   // 価格情報
   setValueByHeader(LISTING_COLUMNS.PURCHASE_PRICE.header, mainInfo.purchasePrice);
   setValueByHeader(LISTING_COLUMNS.SELLING_PRICE.header, mainInfo.sellingPrice);
-  setValueByHeader(LISTING_COLUMNS.BEST_OFFER.header, mainInfo.bestOffer);
+  // Best offer: リサーチシートに数値あり → ON + 拒否価格にセット、空欄 → OFF
+  const bestOfferNum = parseFloat(mainInfo.bestOffer);
+  const hasBestOffer = !isNaN(bestOfferNum) && mainInfo.bestOffer !== '' && mainInfo.bestOffer !== null;
+  setValueByHeader(LISTING_COLUMNS.BEST_OFFER.header,        hasBestOffer ? 'ON' : 'OFF');
+  setValueByHeader(LISTING_COLUMNS.AUTO_ACCEPT_PRICE.header, '');
+  setValueByHeader(LISTING_COLUMNS.AUTO_DECLINE_PRICE.header, hasBestOffer ? bestOfferNum : '');
 
   // 検索URL
   setValueByHeader(LISTING_COLUMNS.LOWEST_PRICE_URL.header, itemList.lowestPriceUrl);
