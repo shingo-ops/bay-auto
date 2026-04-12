@@ -20,11 +20,22 @@ function generateAuthUrl() {
     throw new Error('RuNameが設定されていません。ツール設定シートのRuName行に値を設定してください。');
   }
 
+  // 必要な全scopeを含める
+  const scopes = [
+    'https://api.ebay.com/oauth/api_scope',
+    'https://api.ebay.com/oauth/api_scope/sell.account',
+    'https://api.ebay.com/oauth/api_scope/sell.inventory',
+    'https://api.ebay.com/oauth/api_scope/sell.fulfillment',
+    'https://api.ebay.com/oauth/api_scope/sell.marketing',
+    'https://api.ebay.com/oauth/api_scope/sell.analytics.readonly',
+    'https://api.ebay.com/oauth/api_scope/sell.finances'
+  ].join(' ');
+
   const authUrl = 'https://auth.ebay.com/oauth2/authorize?' +
     'client_id=' + encodeURIComponent(config.appId) +
     '&response_type=code' +
     '&redirect_uri=' + encodeURIComponent(config.ruName) +
-    '&scope=https://api.ebay.com/oauth/api_scope https://api.ebay.com/oauth/api_scope/sell.account';
+    '&scope=' + encodeURIComponent(scopes);
 
   Logger.log('=== 認証URL ===');
   Logger.log(authUrl);
@@ -55,11 +66,21 @@ function exchangeCodeForTokens(authorizationCode) {
   // Basic認証ヘッダー
   const credentials = Utilities.base64Encode(config.appId + ':' + config.certId);
 
+  // Authorization Codeは既にURL-encodedなので、デコードしてから再エンコード
+  // または、特殊な値のみエンコードしない
   const payload = {
     'grant_type': 'authorization_code',
-    'code': authorizationCode,
-    'redirect_uri': config.ruName
+    'code': authorizationCode,  // 既にURL-encoded
+    'redirect_uri': config.ruName  // RuName値はそのまま
   };
+
+  // payloadを手動で構築（authorizationCodeとRuNameはエンコードしない）
+  const payloadString =
+    'grant_type=' + encodeURIComponent(payload.grant_type) +
+    '&code=' + authorizationCode +  // 既にエンコード済みなので再エンコードしない
+    '&redirect_uri=' + config.ruName;  // RuNameはそのまま使用
+
+  Logger.log('Payload: ' + payloadString);
 
   const options = {
     'method': 'post',
@@ -67,9 +88,7 @@ function exchangeCodeForTokens(authorizationCode) {
       'Content-Type': 'application/x-www-form-urlencoded',
       'Authorization': 'Basic ' + credentials
     },
-    'payload': Object.keys(payload).map(function(key) {
-      return encodeURIComponent(key) + '=' + encodeURIComponent(payload[key]);
-    }).join('&'),
+    'payload': payloadString,
     'muteHttpExceptions': true
   };
 
@@ -88,27 +107,41 @@ function exchangeCodeForTokens(authorizationCode) {
   Logger.log('=== トークン取得成功 ===');
   Logger.log('Access Token: ' + result.access_token.substring(0, 20) + '...');
   Logger.log('Refresh Token: ' + result.refresh_token.substring(0, 20) + '...');
-  Logger.log('Expires In: ' + result.expires_in + '秒');
+  Logger.log('Access Token有効期限: ' + result.expires_in + '秒（2時間）');
+  Logger.log('Refresh Token有効期限: ' + result.refresh_token_expires_in + '秒（約18ヶ月）');
 
   // ツール設定シートに保存
-  saveTokensToSheet(result.access_token, result.refresh_token, result.expires_in);
+  saveTokensToSheet(
+    result.access_token,
+    result.refresh_token,
+    result.expires_in,
+    result.refresh_token_expires_in
+  );
 
   return {
     accessToken: result.access_token,
     refreshToken: result.refresh_token,
-    expiresIn: result.expires_in
+    expiresIn: result.expires_in,
+    refreshTokenExpiresIn: result.refresh_token_expires_in
   };
 }
 
 /**
  * トークンをシートに保存
  */
-function saveTokensToSheet(accessToken, refreshToken, expiresIn) {
+function saveTokensToSheet(accessToken, refreshToken, expiresIn, refreshTokenExpiresIn) {
   const settingsSheet = getTargetSpreadsheet().getSheetByName(SHEET_NAMES.SETTINGS);
   const data = settingsSheet.getDataRange().getValues();
 
-  const expiryDate = new Date();
-  expiryDate.setSeconds(expiryDate.getSeconds() + expiresIn);
+  // Access Token有効期限
+  const accessExpiryDate = new Date();
+  accessExpiryDate.setSeconds(accessExpiryDate.getSeconds() + expiresIn);
+
+  // Refresh Token有効期限（約18ヶ月後）
+  const refreshExpiryDate = new Date();
+  if (refreshTokenExpiresIn) {
+    refreshExpiryDate.setSeconds(refreshExpiryDate.getSeconds() + refreshTokenExpiresIn);
+  }
 
   for (let i = 0; i < data.length; i++) {
     const key = data[i][0];
@@ -120,9 +153,18 @@ function saveTokensToSheet(accessToken, refreshToken, expiresIn) {
       settingsSheet.getRange(i + 1, 2).setValue(refreshToken);
     }
     if (key === 'Token Expiry') {
-      settingsSheet.getRange(i + 1, 2).setValue(expiryDate.toLocaleString('ja-JP'));
+      settingsSheet.getRange(i + 1, 2).setValue(accessExpiryDate.toISOString());
+    }
+    if (key === 'Refresh Token Expiry' && refreshTokenExpiresIn) {
+      settingsSheet.getRange(i + 1, 2).setValue(refreshExpiryDate.toISOString());
+      Logger.log('Refresh Token Expiry: ' + refreshExpiryDate.toISOString() + '（' +
+                 refreshExpiryDate.toLocaleString('ja-JP') + '）');
     }
   }
 
   Logger.log('✅ トークンをシートに保存しました');
+  Logger.log('Access Token有効期限: ' + accessExpiryDate.toLocaleString('ja-JP'));
+  if (refreshTokenExpiresIn) {
+    Logger.log('Refresh Token有効期限: ' + refreshExpiryDate.toLocaleString('ja-JP') + '（約18ヶ月後）');
+  }
 }

@@ -14,7 +14,9 @@ const SHEET_NAMES = {
   CALCULATION: '利益計算',
   RESEARCH: 'リサーチ',
   LISTING: '出品', // 転記先シート名（出品シートスプレッドシート内の「出品」シート）
-  CATEGORY_MASTER: 'カテゴリマスタ' // カテゴリマスタシート
+  CATEGORY_MASTER:  'category_master_EBAY_US', // 15列統合スキーマ
+  CONDITION_JA_MAP: 'condition_ja_map',        // コンディション日本語マスタ
+  ITEM_CACHE:       '_cache'                   // API呼び出しキャッシュ（非表示シート）
 };
 
 // Item Specifics色定義
@@ -28,7 +30,7 @@ const SPEC_COLORS = {
 // リサーチシート構造定義（clasp run で取得したエビデンスベース）
 // ========================================
 
-// B1:E2 - トップ情報セクション
+// A1:J2 - トップ情報セクション（clasp run inspectResearchA1J2Range で取得）
 const RESEARCH_TOP_INFO = {
   HEADER_ROW: 1,
   DATA_ROW: 2,
@@ -36,7 +38,10 @@ const RESEARCH_TOP_INFO = {
     STAFF: { col: 2, letter: 'B', header: '担当者' },
     RESEARCH_METHOD: { col: 3, letter: 'C', header: 'リサーチ方法' },
     KEYWORD: { col: 4, letter: 'D', header: 'キーワード' },
-    TARGET_PROFIT_RATE: { col: 5, letter: 'E', header: '目標利益率' }
+    TARGET_PROFIT_RATE: { col: 5, letter: 'E', header: '目標利益率' },
+    MIN_PRICE_USD: { col: 6, letter: 'F', header: '下限価格$' },
+    MAX_PRICE_USD: { col: 7, letter: 'G', header: '上限価格$' },
+    CATEGORY_LARGE: { col: 8, letter: 'H', header: 'カテゴリ(大)' }
   }
 };
 
@@ -79,7 +84,7 @@ const RESEARCH_ITEM_LIST = {
   DATA_ROW: 8,
   COLUMNS: {
     ITEM_URL: { col: 2, letter: 'B', header: 'Item URL' },
-    LOWEST_PRICE_URL: { col: 3, letter: 'C', header: '最安値URL' },
+    LOWEST_PRICE_URL: { col: 3, letter: 'C', header: '検索URL' },
     SPEC_URL: { col: 4, letter: 'D', header: 'スペックURL' },
     CONDITION: { col: 5, letter: 'E', header: '状態' },
     // F列は空
@@ -97,7 +102,7 @@ const RESEARCH_ITEM_LIST = {
 const RESEARCH_POLICY = {
   HEADER_ROW: 13,
   POLICY_1_ROW: 14,  // Expedited
-  POLICY_2_ROW: 15,  // Standard
+  POLICY_2_ROW: 15,  // Economy
   POLICY_3_ROW: 16,  // 書状
   COLUMNS: {
     POLICY_NAME: { col: 2, letter: 'B', header: 'ポリシー' },
@@ -139,7 +144,7 @@ const LISTING_ROWS = {
 // 注意: ヘッダー名ベースの動的マッピングを使用しているため、列位置が変わっても自動対応
 const LISTING_COLUMNS = {
   LISTING_URL: { header: '出品URL' },
-  STATUS: { header: 'ステータス' },
+  STATUS: { header: '出品ステータス' },
   SKU: { header: 'SKU' },
   KEYWORD: { header: '仕入れキーワード' },
   MEMO: { header: 'メモ' },
@@ -153,14 +158,15 @@ const LISTING_COLUMNS = {
   PURCHASE_URL_3: { header: '仕入元URL③' },
 
   // 担当者情報
-  RESEARCH_STAFF: { header: 'リサーチ担当' },
-  LISTING_STAFF: { header: '出品担当' },
-  PICKUP_STAFF: { header: 'ピックアップ担当' },
-  PURCHASE_SEARCH_STAFF: { header: '仕入れ検索担当' },
-  PROFIT_CALC_STAFF: { header: '利益計算担当' },
-  TASK6_STAFF: { header: '業務6担当' },
+  RESEARCH_STAFF: { header: 'リサーチ担当' }, // 必須列
+  LISTING_STAFF: { header: '出品担当' }, // オプショナル列（列がなくてもエラーにしない）
+  PICKUP_STAFF: { header: 'ピックアップ担当' }, // オプショナル列（列がなくてもエラーにしない）
+  PURCHASE_SEARCH_STAFF: { header: '仕入れ検索担当' }, // オプショナル列（列がなくてもエラーにしない）
+  PROFIT_CALC_STAFF: { header: '利益計算担当' }, // オプショナル列（列がなくてもエラーにしない）
+  TASK6_STAFF: { header: '業務6担当' }, // オプショナル列（列がなくてもエラーにしない）
 
   // 商品情報
+  WORD_CHECK: { header: 'ワード判定' },
   TITLE: { header: 'タイトル' },
   CHAR_COUNT_1: { header: '文字数' },
   CONDITION: { header: '状態' },
@@ -259,7 +265,7 @@ const LISTING_COLUMNS = {
   PURCHASE_PRICE: { header: '仕入値(¥)' },
   SELLING_PRICE: { header: '売値($)' },
   BEST_OFFER: { header: 'Best offer' },
-  LOWEST_PRICE_URL: { header: '最安値URL' },
+  LOWEST_PRICE_URL: { header: '検索URL' },
 
   // 利益関連
   PROFIT_BEFORE_REFUND: { header: '還付抜き利益率' },  // 実質的に利益率を指す（後方互換性のため残す）
@@ -268,7 +274,7 @@ const LISTING_COLUMNS = {
   PROFIT_AMOUNT_AFTER_REFUND: { header: '還付込み利益額' },
   PROFIT_RATE_AFTER_REFUND: { header: '還付込み利益率' },
 
-  // 画像関連列（DI-EG）= 25列（画像URL + 画像1-24）
+  // 画像関連列（DI-EG）= 25列（画像URL + 画像1-23 + ストア画像）
   IMAGE_URL: { header: '画像URL' },
   IMAGE_1: { header: '画像1' },
   IMAGE_2: { header: '画像2' },
@@ -293,7 +299,7 @@ const LISTING_COLUMNS = {
   IMAGE_21: { header: '画像21' },
   IMAGE_22: { header: '画像22' },
   IMAGE_23: { header: '画像23' },
-  IMAGE_24: { header: '画像24' },
+  STORE_IMAGE: { header: 'ストア画像' },
 
   LISTING_TIMESTAMP: { header: '出品タイムスタンプ' },
   MGMT_YEAR_MONTH: { header: '管理年月' }
@@ -396,10 +402,11 @@ function getEbayConfig() {
     appId: config['App ID'] || '',
     certId: config['Cert ID'] || '',
     devId: config['Dev ID'] || '',
-    isSandbox: config['Sandbox'] === 'TRUE' || config['Sandbox'] === true,
+    isSandbox: false, // 常に本番環境を使用
     imageFolderUrl: config['画像フォルダ'] || '',
     listingSpreadsheetId: extractSpreadsheetId(config['出品シート']) || '',
     categoryMasterSpreadsheetId: extractSpreadsheetId(config['カテゴリマスタ']) || '',
+    storeImageUrl: config['ストア画像'] || '',
     userToken: config['USER_TOKEN'] || '',
 
     // eBay APIエンドポイント
@@ -450,6 +457,23 @@ function getOAuthToken() {
     return token;
   }
 
+  // ✅ 修正：App ID / Cert IDの事前確認
+  if (!config.appId || config.appId.trim() === '') {
+    throw new Error(
+      'eBay API設定が不完全です。\n\n' +
+      'ツール設定シートで「App ID」を設定してください。\n\n' +
+      '設定後、初期設定ボタンから completeInitialSetup() を再実行してください。'
+    );
+  }
+
+  if (!config.certId || config.certId.trim() === '') {
+    throw new Error(
+      'eBay API設定が不完全です。\n\n' +
+      'ツール設定シートで「Cert ID」を設定してください。\n\n' +
+      '設定後、初期設定ボタンから completeInitialSetup() を再実行してください。'
+    );
+  }
+
   // 新しいトークンを取得（client_credentials）
   Logger.log('client_credentialsで新しいトークンを取得します');
   const credentials = Utilities.base64Encode(config.appId + ':' + config.certId);
@@ -464,13 +488,29 @@ function getOAuthToken() {
     payload: {
       'grant_type': 'client_credentials',
       'scope': 'https://api.ebay.com/oauth/api_scope'
-    }
+    },
+    muteHttpExceptions: true // ✅ 追加：エラーレスポンスを取得可能に
   };
 
   try {
     const response = UrlFetchApp.fetch(tokenUrl, options);
-    const result = JSON.parse(response.getContentText());
+    const statusCode = response.getResponseCode();
+    const responseText = response.getContentText();
 
+    // ✅ 修正：HTTPステータスコード確認
+    if (statusCode !== 200) {
+      Logger.log('トークン取得API エラー: ' + statusCode + ' - ' + responseText);
+      throw new Error(
+        'eBay APIトークンの取得に失敗しました（HTTP ' + statusCode + '）\n\n' +
+        '以下を確認してください:\n' +
+        '1. App ID / Cert ID が正しいか\n' +
+        '2. eBay Developer Accountが有効か\n' +
+        '3. Sandbox設定が正しいか（本番: false, テスト: true）\n\n' +
+        'エラー詳細:\n' + responseText.substring(0, 200)
+      );
+    }
+
+    const result = JSON.parse(responseText);
     token = result.access_token;
     const expiresIn = result.expires_in; // 秒単位
     const expiryTime = new Date().getTime() + (expiresIn * 1000);
@@ -484,7 +524,22 @@ function getOAuthToken() {
 
   } catch (error) {
     Logger.log('OAuthトークン取得エラー: ' + error.toString());
-    throw new Error('eBay APIトークンの取得に失敗しました: ' + error.toString());
+
+    // ✅ 修正：詳細なエラーメッセージ
+    if (error.message && error.message.indexOf('eBay API') !== -1) {
+      // 既にカスタムエラーメッセージの場合はそのまま再スロー
+      throw error;
+    } else {
+      // その他のエラー（ネットワークエラー等）
+      throw new Error(
+        'eBay APIトークンの取得中にエラーが発生しました。\n\n' +
+        'エラー内容:\n' + error.toString() + '\n\n' +
+        '対処方法:\n' +
+        '1. ツール設定シートのApp ID / Cert IDを確認\n' +
+        '2. インターネット接続を確認\n' +
+        '3. 初期設定ボタンから completeInitialSetup() を再実行'
+      );
+    }
   }
 }
 

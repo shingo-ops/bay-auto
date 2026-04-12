@@ -206,6 +206,130 @@ function getItemGroupData(itemGroupId) {
 }
 
 /**
+ * カテゴリIDから利用可能なCondition（状態）のリストを取得
+ *
+ * eBay Metadata APIを使用してカテゴリごとの利用可能なCondition値を取得
+ *
+ * @param {string} categoryId カテゴリID
+ * @returns {Array<string>} 利用可能なConditionのリスト
+ */
+function getCategoryConditions(categoryId) {
+  try {
+    Logger.log('=== カテゴリCondition取得開始 ===');
+    Logger.log('カテゴリID: ' + categoryId);
+
+    if (!categoryId) {
+      Logger.log('⚠️ カテゴリIDが空です');
+      return [];
+    }
+
+    const config = getEbayConfig();
+    const token = getOAuthToken();
+
+    // Metadata API の getItemConditionPolicies エンドポイント
+    // https://developer.ebay.com/api-docs/sell/metadata/resources/marketplace/methods/getItemConditionPolicies
+    const apiUrl = 'https://api.ebay.com/sell/metadata/v1/marketplace/EBAY_US/item_condition_policy?filter=categoryIds:{' + categoryId + '}';
+
+    const options = {
+      method: 'get',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      muteHttpExceptions: true
+    };
+
+    Logger.log('Metadata API呼び出し: ' + apiUrl);
+
+    const response = UrlFetchApp.fetch(apiUrl, options);
+    const statusCode = response.getResponseCode();
+    const responseText = response.getContentText();
+
+    if (statusCode !== 200) {
+      Logger.log('❌ Metadata APIエラー: ' + statusCode + ' - ' + responseText);
+      // エラーの場合はデフォルトのConditionリストを返す
+      return getDefaultConditions();
+    }
+
+    const data = JSON.parse(responseText);
+    Logger.log('Metadata API レスポンス取得成功');
+    Logger.log('レスポンス構造: ' + JSON.stringify(data).substring(0, 500) + '...');
+
+    // itemConditionPolicies配列から利用可能なConditionを抽出
+    const conditions = [];
+
+    if (data.itemConditionPolicies && data.itemConditionPolicies.length > 0) {
+      Logger.log('itemConditionPolicies数: ' + data.itemConditionPolicies.length);
+      const policy = data.itemConditionPolicies[0];
+      Logger.log('policy構造: ' + JSON.stringify(policy).substring(0, 300) + '...');
+
+      if (policy.itemConditions && Array.isArray(policy.itemConditions)) {
+        Logger.log('itemConditions数: ' + policy.itemConditions.length);
+        for (let i = 0; i < policy.itemConditions.length; i++) {
+          const condition = policy.itemConditions[i];
+          Logger.log('  condition[' + i + ']: ' + JSON.stringify(condition));
+          if (condition.conditionId) {
+            conditions.push(condition.conditionId);
+            Logger.log('    → 追加: ' + condition.conditionId);
+          }
+        }
+      } else {
+        Logger.log('⚠️ policy.itemConditionsが存在しないか配列ではありません');
+      }
+    } else {
+      Logger.log('⚠️ data.itemConditionPoliciesが存在しないか空です');
+      Logger.log('data keys: ' + Object.keys(data).join(', '));
+    }
+
+    if (conditions.length === 0) {
+      Logger.log('⚠️ Conditionが取得できませんでした。デフォルトを使用します。');
+      return getDefaultConditions();
+    }
+
+    Logger.log('✅ Condition取得成功: ' + conditions.length + '件');
+    Logger.log('Conditions: ' + JSON.stringify(conditions));
+    Logger.log('=== カテゴリCondition取得完了 ===');
+
+    return conditions;
+
+  } catch (error) {
+    Logger.log('❌ getCategoryConditionsエラー: ' + error.toString());
+    if (error.stack) {
+      Logger.log('スタックトレース: ' + error.stack);
+    }
+    // エラーの場合はデフォルトを返す
+    return getDefaultConditions();
+  }
+}
+
+/**
+ * デフォルトのConditionリストを返す
+ *
+ * eBay APIでConditionが取得できない場合のフォールバック
+ *
+ * @returns {Array<string>} デフォルトのConditionリスト
+ */
+function getDefaultConditions() {
+  return [
+    'NEW',
+    'NEW_OTHER',
+    'NEW_WITH_DEFECTS',
+    'MANUFACTURER_REFURBISHED',
+    'CERTIFIED_REFURBISHED',
+    'EXCELLENT_REFURBISHED',
+    'VERY_GOOD_REFURBISHED',
+    'GOOD_REFURBISHED',
+    'SELLER_REFURBISHED',
+    'LIKE_NEW',
+    'USED_EXCELLENT',
+    'USED_VERY_GOOD',
+    'USED_GOOD',
+    'USED_ACCEPTABLE',
+    'FOR_PARTS_OR_NOT_WORKING'
+  ];
+}
+
+/**
  * 商品情報からカテゴリ情報を抽出
  *
  * @param {Object} item eBay商品情報
@@ -300,37 +424,60 @@ function extractItemSpecifics(item) {
 }
 
 /**
- * URLから商品の全情報を取得
+ * URLから商品の全情報を取得（_cache シートを利用してAPI呼び出しを削減）
+ *
+ * キャッシュヒット時: category_id / category_name / item_specs_json を返す（API 呼び出しなし）
+ *   ※ title / imageUrl はキャッシュに含まれないため空文字になる
+ * キャッシュミス時: eBay API を呼び出し、結果を _cache シートに保存してから返す
  *
  * @param {string} url eBay商品URL
- * @returns {Object} { item, category, specifics }
+ * @returns {Object} { item, category, specifics, title, itemId, imageUrl }
  */
 function getProductInfoFromUrl(url) {
+  // ─── キャッシュ確認 ───────────────────────────────────────
+  const cached = getCacheEntry(url);
+  if (cached) {
+    return {
+      item: {
+        categoryId:   cached.categoryId,
+        categoryPath: cached.categoryName
+      },
+      category: {
+        categoryId:   cached.categoryId,
+        categoryName: cached.categoryName,
+        fullPath:     cached.categoryName
+      },
+      specifics: cached.specifics,
+      title:     cached.title || '',
+      itemId:    extractItemIdFromUrl(url),
+      imageUrl:  ''
+    };
+  }
+
+  // ─── キャッシュミス: API 呼び出し ─────────────────────────
   try {
-    // URLから商品IDを抽出
     const itemId = extractItemIdFromUrl(url);
     Logger.log('商品ID: ' + itemId);
 
-    // eBay APIで商品情報を取得
     const item = getItemFromEbay(itemId);
 
-    // カテゴリ情報を抽出
     const category = extractCategoryInfo(item);
-
-    // アイテムスペシフィックスを抽出
     const specifics = extractItemSpecifics(item);
+    const imageUrl  = item.image && item.image.imageUrl ? item.image.imageUrl : '';
 
-    // 画像URLを抽出
-    const imageUrl = item.image && item.image.imageUrl ? item.image.imageUrl : '';
-
-    return {
-      item: item,
-      category: category,
+    const productInfo = {
+      item:      item,
+      category:  category,
       specifics: specifics,
-      title: item.title || '',
-      itemId: itemId,
-      imageUrl: imageUrl
+      title:     item.title || '',
+      itemId:    itemId,
+      imageUrl:  imageUrl
     };
+
+    // _cache シートに保存
+    saveCacheEntry(url, productInfo);
+
+    return productInfo;
 
   } catch (error) {
     Logger.log('getProductInfoFromUrlエラー: ' + error.toString());

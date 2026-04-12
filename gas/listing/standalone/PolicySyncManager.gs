@@ -34,17 +34,20 @@ function syncPoliciesToEbay(spreadsheetId) {
       throw new Error('"ポリシー管理"シートが見つかりません');
     }
 
+    // 列マッピングを取得（ヘッダー名でマッピング）
+    const columnMap = getPolicySheetColumnMap(policySheet);
+
     // データを取得（ヘッダー行を除く）
     const data = policySheet.getDataRange().getValues();
     const headers = data[0];
 
-    // 列番号を確認（6列）
-    const operationCol = POLICY_SHEET_COLUMNS.OPERATION - 1;
-    const typeCol = POLICY_SHEET_COLUMNS.POLICY_TYPE - 1;
-    const nameCol = POLICY_SHEET_COLUMNS.POLICY_NAME - 1;
-    const idCol = POLICY_SHEET_COLUMNS.POLICY_ID - 1;
-    const marketCol = POLICY_SHEET_COLUMNS.MARKETPLACE - 1;
-    const descCol = POLICY_SHEET_COLUMNS.DESCRIPTION - 1;
+    // 列番号を取得（0-indexed）
+    const operationCol = columnMap.OPERATION - 1;
+    const typeCol = columnMap.POLICY_TYPE - 1;
+    const nameCol = columnMap.POLICY_NAME - 1;
+    const idCol = columnMap.POLICY_ID - 1;
+    const marketCol = (columnMap.MARKETPLACE || 0) - 1;
+    const descCol = (columnMap.DESCRIPTION || 0) - 1;
 
     const results = {
       created: [],
@@ -87,9 +90,9 @@ function syncPoliciesToEbay(spreadsheetId) {
           const newPolicyId = createPolicy(policyType, policyName, marketplace, description);
 
           // ポリシーIDを記入
-          policySheet.getRange(rowNumber, POLICY_SHEET_COLUMNS.POLICY_ID).setValue(newPolicyId);
+          policySheet.getRange(rowNumber, columnMap.POLICY_ID).setValue(newPolicyId);
           // 操作を"-"に戻す
-          policySheet.getRange(rowNumber, POLICY_SHEET_COLUMNS.OPERATION).setValue('-');
+          policySheet.getRange(rowNumber, columnMap.OPERATION).setValue('-');
 
           Logger.log('✅ 作成完了: ' + policyName + ' (ID: ' + newPolicyId + ')');
           Logger.log('');
@@ -111,7 +114,7 @@ function syncPoliciesToEbay(spreadsheetId) {
           updatePolicy(policyType, policyId, policyName, description);
 
           // 操作を"-"に戻す
-          policySheet.getRange(rowNumber, POLICY_SHEET_COLUMNS.OPERATION).setValue('-');
+          policySheet.getRange(rowNumber, columnMap.OPERATION).setValue('-');
 
           Logger.log('✅ 更新完了: ' + policyName);
           Logger.log('');

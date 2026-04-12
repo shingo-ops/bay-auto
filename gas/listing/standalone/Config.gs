@@ -150,9 +150,10 @@ function getTargetSpreadsheet(spreadsheetId) {
  * シート名定義
  */
 const SHEET_NAMES = {
-  LISTING: 'メイン',
+  LISTING: '出品',
   SETTINGS: 'ツール設定',
-  POLICY_SETTINGS: 'ポリシー管理'
+  POLICY_SETTINGS: 'ポリシー管理',
+  DROPDOWN_MANAGEMENT: 'プルダウン管理'
 };
 
 /**
@@ -176,26 +177,64 @@ const POLICY_SHEET_HEADERS = {
  */
 function getPolicySheetHeaders() {
   return [
-    POLICY_SHEET_HEADERS.OPERATION,
-    POLICY_SHEET_HEADERS.POLICY_TYPE,
-    POLICY_SHEET_HEADERS.POLICY_NAME,
-    POLICY_SHEET_HEADERS.POLICY_ID,
-    POLICY_SHEET_HEADERS.MARKETPLACE,
-    POLICY_SHEET_HEADERS.DESCRIPTION
+    POLICY_SHEET_HEADERS.OPERATION,      // 1. 操作
+    POLICY_SHEET_HEADERS.POLICY_TYPE,    // 2. ポリシータイプ
+    POLICY_SHEET_HEADERS.POLICY_NAME,    // 3. ポリシー名
+    POLICY_SHEET_HEADERS.DESCRIPTION,    // 4. 説明
+    POLICY_SHEET_HEADERS.MARKETPLACE,    // 5. マーケットプレイス
+    POLICY_SHEET_HEADERS.POLICY_ID       // 6. ポリシーID
   ];
 }
 
 /**
- * ポリシー管理シートの列番号定義
+ * ポリシー管理シートの列マッピングを取得
+ *
+ * ヘッダー名から列番号を動的にマッピングします。
+ * これにより、列の順序を変更してもコードの修正が不要になります。
+ *
+ * @param {Sheet} sheet ポリシー管理シート
+ * @returns {Object} 列マッピング { OPERATION: 1, POLICY_TYPE: 2, ... }
  */
-const POLICY_SHEET_COLUMNS = {
-  OPERATION: 1,        // A列 - プルダウンあり (-, 追加, 更新, 削除)
-  POLICY_TYPE: 2,      // B列 - プルダウンあり (Fulfillment Policy, Return Policy, Payment Policy)
-  POLICY_NAME: 3,      // C列
-  POLICY_ID: 4,        // D列
-  MARKETPLACE: 5,      // E列 - プルダウンあり (EBAY_US等)
-  DESCRIPTION: 6       // F列
-};
+function getPolicySheetColumnMap(sheet) {
+  // ヘッダー行を取得（1行目）
+  const headerRow = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+
+  // ヘッダー名→列番号のマップを作成
+  const columnMap = {};
+
+  for (let i = 0; i < headerRow.length; i++) {
+    const headerName = headerRow[i];
+    const colNumber = i + 1; // 列番号は1-indexed
+
+    // ヘッダー名に対応する定数名を見つける
+    if (headerName === POLICY_SHEET_HEADERS.OPERATION) {
+      columnMap.OPERATION = colNumber;
+    } else if (headerName === POLICY_SHEET_HEADERS.POLICY_TYPE) {
+      columnMap.POLICY_TYPE = colNumber;
+    } else if (headerName === POLICY_SHEET_HEADERS.POLICY_NAME) {
+      columnMap.POLICY_NAME = colNumber;
+    } else if (headerName === POLICY_SHEET_HEADERS.POLICY_ID) {
+      columnMap.POLICY_ID = colNumber;
+    } else if (headerName === POLICY_SHEET_HEADERS.MARKETPLACE) {
+      columnMap.MARKETPLACE = colNumber;
+    } else if (headerName === POLICY_SHEET_HEADERS.DESCRIPTION) {
+      columnMap.DESCRIPTION = colNumber;
+    }
+  }
+
+  // 必須列が存在するか確認
+  const requiredColumns = ['OPERATION', 'POLICY_TYPE', 'POLICY_NAME', 'POLICY_ID'];
+  for (let i = 0; i < requiredColumns.length; i++) {
+    const col = requiredColumns[i];
+    if (!columnMap[col]) {
+      throw new Error('必須列が見つかりません: ' + POLICY_SHEET_HEADERS[col]);
+    }
+  }
+
+  Logger.log('ポリシーシート列マッピング: ' + JSON.stringify(columnMap));
+
+  return columnMap;
+}
 
 /**
  * "ツール設定"シートから設定を取得
@@ -224,8 +263,9 @@ function getConfig() {
     const key = data[i][0];   // A列: 項目名
     const value = data[i][1]; // B列: 値
 
-    // ヘッダー行をスキップ（"項目"というキーは設定として扱わない）
-    if (key === '項目' || key === 'Item' || key === 'Key') {
+    // ヘッダー行・セクションヘッダーをスキップ
+    if (key === '項目' || key === 'Item' || key === 'Key' ||
+        key === '【アカウント情報】' || key === '【出品デフォルト設定】') {
       Logger.log('ヘッダー行をスキップ: ' + key);
       continue;
     }
@@ -293,6 +333,9 @@ function getEbayConfig() {
     tokenExpiry: config['Token Expiry'] || '',
     ruName: config['RuName'] || '',
     categoryMasterSpreadsheetId: extractSpreadsheetId(config['カテゴリマスタ']) || '',
+    outputDbSpreadsheetId: extractSpreadsheetId(config['出品DB']) || '',
+    itemLocation: config['出品所在地'] || 'Japan',
+    postalCode:   config['郵便番号']   || '',
 
     // eBay APIエンドポイント（本番環境）
     getApiEndpoint: function() {
@@ -319,6 +362,38 @@ function getUserToken() {
   }
 
   return config.userToken;
+}
+
+/**
+ * eBay Inventory API エンドポイントを取得
+ *
+ * @returns {string} Inventory API ベースURL
+ */
+function getInventoryApiUrl() {
+  return 'https://api.ebay.com/sell/inventory/v1';
+}
+
+/**
+ * eBay Trading API エンドポイントを取得
+ *
+ * @returns {string} Trading API エンドポイント
+ */
+function getTradingApiUrl() {
+  return 'https://api.ebay.com/ws/api.dll';
+}
+
+/**
+ * Trading API バージョン（Compatibility Level）
+ */
+const TRADING_API_VERSION = '1355';
+
+/**
+ * eBay Marketing API エンドポイントを取得
+ *
+ * @returns {string} Marketing API ベースURL
+ */
+function getMarketingApiUrl() {
+  return 'https://api.ebay.com/sell/marketing/v1';
 }
 
 /**

@@ -93,9 +93,35 @@ HIGH LIFE JPN（Treasure Island JP）
 | B | category_tree_id | 文字列 | Python | 0 |
 | C | category_id | 文字列 | Python | 261581 |
 | D | category_name | 文字列 | Python | Cell Phones & Smartphones |
-| E | conditions_json | JSON | Python | [{"id":"1000","name":"New",...}] |
-| F | fvf_rate | 数値 | Gemini | 13.25（%） |
-| G | last_synced | 日付 | Python | 2026-04-10 |
+| E | required_specs_json | JSON配列 | Python | ["Brand","Type","Color"] |
+| F | recommended_specs_json | JSON配列 | Python | ["Model","MPN"] |
+| G | optional_specs_json | JSON配列 | Python | ["Size","Weight"] |
+| H | aspect_values_json | JSONオブジェクト | Python | {"Color":["Black","White"]} |
+| I | aspect_modes_json | JSONオブジェクト | Python | {"Color":"SELECTION_ONLY"} |
+| J | multi_value_aspects_json | JSON配列 | Python | ["Color","Features"] |
+| K | conditions_json | JSON配列 | Python | [{"id":"1000","name":"New","enum":"","category_display":"New"}] |
+| L | fvf_rate | 数値 | Gemini | 13.25（%） |
+| M | fvf_note | 文字列 | Gemini | "$7,500超は2.35%" / 段階的料率・例外条件等、補足なしは空文字 |
+| N | last_synced | 日付 | Python | 2026-04-10 |
+
+#### 旧ヘッダーとの対照表（旧 カテゴリマスタ → 新 category_master_EBAY_XX）
+
+| 旧列名 | 新列名 | 状態 |
+|---|---|---|
+| categoryId | category_id | 名前変更 |
+| categoryName | category_name | 名前変更 |
+| categoryTreeVersion | category_tree_id | 概念変更（バージョン文字列→ツリーID整数） |
+| requiredAspects | required_specs_json | 名前変更 |
+| recommendedAspects | recommended_specs_json | 名前変更 |
+| optionalAspects | optional_specs_json | 名前変更 |
+| aspectValues | aspect_values_json | 名前変更 |
+| aspectModes | aspect_modes_json | 名前変更 |
+| multiValueAspects | multi_value_aspects_json | 名前変更 |
+| fvfRate | fvf_rate | 名前変更 |
+| fvfNote | fvf_note | 名前変更・Geminiによる自動抽出に変更 |
+| lastUpdated | last_synced | 名前変更 |
+| —（新規） | marketplace_id | 追加（マルチマーケット対応） |
+| —（新規） | conditions_json | 追加（コンディション情報統合） |
 
 #### データソースと取得API
 
@@ -126,6 +152,7 @@ HIGH LIFE JPN（Treasure Island JP）
 | 1000 | NEW |
 | 1500 | NEW_OTHER |
 | 1750 | NEW_WITH_DEFECTS |
+| 1900 | UNUSED |
 | 2000 | CERTIFIED_REFURBISHED |
 | 2010 | EXCELLENT_REFURBISHED |
 | 2020 | VERY_GOOD_REFURBISHED |
@@ -139,6 +166,30 @@ HIGH LIFE JPN（Treasure Island JP）
 | 5000 | USED_GOOD |
 | 6000 | USED_ACCEPTABLE |
 | 7000 | FOR_PARTS_OR_NOT_WORKING |
+
+#### ja_display デフォルト値（generate_csv.py JA_DISPLAY_DEFAULT）
+
+カテゴリ固有の表示名（Graded等）はデフォルト値が空のまま → GeminiTranslate.gs で自動補完。
+
+| condition_id | ja_display デフォルト |
+|---|---|
+| 1000 | 新品、未使用 |
+| 1500 | 未使用に近い |
+| 1750 | 新品、未使用（難あり） |
+| 1900 | 未使用 |
+| 2000 | メーカー整備済み |
+| 2010 | 整備済み - 非常に良い |
+| 2020 | 整備済み - 良い |
+| 2030 | 整備済み - やや傷あり |
+| 2500 | セラー整備済み |
+| 2750 | 未使用に近い |
+| 2990 | 目立った傷や汚れなし |
+| 3000 | やや傷や汚れあり |
+| 3010 | 傷や汚れあり |
+| 4000 | 目立った傷や汚れなし |
+| 5000 | やや傷や汚れあり |
+| 6000 | 全体的に状態が悪い |
+| 7000 | ジャンク品（部品取り用） |
 
 ### 3.3 sync_log（更新履歴）
 
@@ -246,6 +297,17 @@ configシートは廃止。全設定値はGASのPropertiesService（スクリプ
 | DISCORD_WEBHOOK_AUDIT | Discord通知用Webhook URL | ✅ 登録済み |
 | GEMINI_API_KEY | Gemini 2.5 Flash-Lite API キー | ✅ 登録済み |
 | CLAUDE_CODE_OAUTH_TOKEN | Claude Code 認証トークン | ✅ 登録済み |
+
+#### ebay-db 以外のプロジェクトで使用するSecrets（参考）
+
+| Secret名 | 用途 |
+|---|---|
+| LISTING_CB_DEV | listing/container DEV環境 scriptId |
+| LISTING_CB_PROD | listing/container PROD環境 scriptId |
+| LISTING_SA_DEV | listing/standalone DEV環境 scriptId |
+| LISTING_SA_PROD | listing/standalone PROD環境 scriptId |
+| RESEARCH_CB_DEV | research/container DEV環境 scriptId |
+| RESEARCH_CB_PROD | research/container PROD環境 scriptId |
 
 #### v1.1から削除されたSecrets
 
