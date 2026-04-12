@@ -293,3 +293,67 @@ function getConditionIdByJaDisplay(categoryId, jaDisplay) {
   Logger.log('ja_display に対応する condition_id が見つかりません: ' + jaDisplay);
   return null;
 }
+
+/**
+ * condition_ja_map のグループ A〜D における condition_id "3000" の表示を「中古品」に一括更新
+ *
+ * GASエディタから一度だけ手動実行する管理用関数。
+ * 実行後は condition_ja_map シートの ja_map_json が書き換わる。
+ */
+function updateCondition3000ToChukuhin() {
+  const categoryMasterSs = openCategoryMasterSs();
+  if (!categoryMasterSs) {
+    SpreadsheetApp.getUi().alert('カテゴリマスタスプレッドシートが開けません。ツール設定を確認してください。');
+    return;
+  }
+
+  const sheet = categoryMasterSs.getSheetByName(SHEET_NAMES.CONDITION_JA_MAP);
+  if (!sheet) {
+    SpreadsheetApp.getUi().alert(SHEET_NAMES.CONDITION_JA_MAP + ' シートが見つかりません');
+    return;
+  }
+
+  const data    = sheet.getDataRange().getValues();
+  const headers = data[0];
+  const groupIdx  = headers.indexOf('condition_group');
+  const jaMapIdx  = headers.indexOf('ja_map_json');
+
+  if (groupIdx === -1 || jaMapIdx === -1) {
+    SpreadsheetApp.getUi().alert('condition_group または ja_map_json 列が見つかりません');
+    return;
+  }
+
+  const targetGroups = ['A', 'B', 'C', 'D'];
+  const log = [];
+
+  for (let i = 1; i < data.length; i++) {
+    const group = String(data[i][groupIdx]);
+    if (targetGroups.indexOf(group) === -1) continue;
+
+    const jaMapJson = data[i][jaMapIdx];
+    if (!jaMapJson) continue;
+
+    let jaMap;
+    try {
+      jaMap = JSON.parse(jaMapJson);
+    } catch (e) {
+      Logger.log('パースエラー (行' + (i + 1) + '): ' + e);
+      continue;
+    }
+
+    if (jaMap.hasOwnProperty('3000')) {
+      const oldValue = jaMap['3000'];
+      jaMap['3000'] = '中古品';
+      sheet.getRange(i + 1, jaMapIdx + 1).setValue(JSON.stringify(jaMap));
+      log.push('グループ ' + group + ': "' + oldValue + '" → "中古品"');
+      Logger.log('[updateCondition3000] ' + log[log.length - 1]);
+    }
+  }
+
+  const message = log.length > 0
+    ? '更新完了（' + log.length + '件）:\n\n' + log.join('\n')
+    : '更新対象なし（グループA〜Dに "3000" キーが見つかりませんでした）';
+
+  Logger.log('[updateCondition3000] ' + message);
+  SpreadsheetApp.getUi().alert(message);
+}
