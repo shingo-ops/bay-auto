@@ -462,48 +462,62 @@ function convertPolicyNamesToIds(data, spreadsheetId) {
  * @returns {string} eBay ConditionID
  */
 function resolveConditionIdFromMaster(conditionStr, config) {
+  if (!conditionStr || String(conditionStr).trim() === '') return '3000';
+  const str = String(conditionStr).trim();
+
+  // 1次: カテゴリマスタの condition_ja_map.ja_map_json から逆引き
   try {
-    if (!conditionStr || String(conditionStr).trim() === '') return '3000';
-    const str = String(conditionStr).trim();
-
     const masterSpreadsheetId = config.categoryMasterSpreadsheetId;
-    if (!masterSpreadsheetId) {
-      Logger.log('⚠️ categoryMasterSpreadsheetId 未設定。デフォルト3000を使用');
-      return '3000';
-    }
-
-    const masterSs = SpreadsheetApp.openById(masterSpreadsheetId);
-    const sheet = masterSs.getSheetByName('condition_ja_map');
-    if (!sheet) {
-      Logger.log('⚠️ condition_ja_map シートが見つかりません。デフォルト3000を使用');
-      return '3000';
-    }
-
-    const data    = sheet.getDataRange().getValues();
-    const headers = data[0];
-    const jaMapIdx = headers.indexOf('ja_map_json');
-    if (jaMapIdx === -1) {
-      Logger.log('⚠️ ja_map_json 列が見つかりません。デフォルト3000を使用');
-      return '3000';
-    }
-
-    for (let i = 1; i < data.length; i++) {
-      let jaMap;
-      try { jaMap = JSON.parse(String(data[i][jaMapIdx] || '{}')); } catch (e) { continue; }
-      for (const id in jaMap) {
-        if (String(jaMap[id]) === str) {
-          Logger.log('condition_id 解決: "' + str + '" → ' + id);
-          return String(id);
+    if (masterSpreadsheetId) {
+      const masterSs = SpreadsheetApp.openById(masterSpreadsheetId);
+      const sheet    = masterSs.getSheetByName('condition_ja_map');
+      if (sheet) {
+        const data    = sheet.getDataRange().getValues();
+        const headers = data[0];
+        const jaMapIdx = headers.indexOf('ja_map_json');
+        if (jaMapIdx !== -1) {
+          for (let i = 1; i < data.length; i++) {
+            let jaMap;
+            try { jaMap = JSON.parse(String(data[i][jaMapIdx] || '{}')); } catch (e) { continue; }
+            for (const id in jaMap) {
+              if (String(jaMap[id]) === str) {
+                Logger.log('condition_id 解決(master): "' + str + '" → ' + id);
+                return String(id);
+              }
+            }
+          }
         }
       }
     }
-
-    Logger.log('⚠️ condition_id が見つかりません: "' + str + '" → デフォルト3000');
-    return '3000';
   } catch (e) {
-    Logger.log('⚠️ resolveConditionIdFromMaster エラー: ' + e.toString());
-    return '3000';
+    Logger.log('⚠️ ja_map_json 検索エラー: ' + e.toString());
   }
+
+  // 2次フォールバック: 固定マッピング（日本語 + 英語）
+  const fallback = {
+    '新品/未使用':          '1000',
+    'ほぼ新品':             '1500',
+    '目立った傷や汚れなし': '2750',
+    'やや傷や汚れあり':     '3000',
+    '傷や汚れあり':         '5000',
+    '全体的に状態が悪い':   '6000',
+    'ジャンク品':           '7000',
+    'New':                         '1000',
+    'New other (see details)':     '1500',
+    'Like New':                    '2750',
+    'Used':                        '3000',
+    'Very Good':                   '4000',
+    'Good':                        '5000',
+    'Acceptable':                  '6000',
+    'For parts or not working':    '7000'
+  };
+  if (fallback[str]) {
+    Logger.log('condition_id フォールバック(固定): "' + str + '" → ' + fallback[str]);
+    return fallback[str];
+  }
+
+  Logger.log('⚠️ condition_id が見つかりません: "' + str + '" → デフォルト3000');
+  return '3000';
 }
 
 /**
@@ -1139,8 +1153,24 @@ function transferToOutputDb(spreadsheetId, rowNumber, listingData, result) {
       Logger.log('⚠️ "管理年月"列が見つかりません');
     }
 
-    // 出品DB末尾に追加
-    const newRow = outputSheet.getLastRow() + 1;
+    // 実データが入っている最終行を特定（空白行をスキップ）
+    // getLastRow() は書式だけ設定された空行もカウントするため URL 列で判定
+    const outputHeaders3 = outputSheet.getRange(3, 1, 1, outputSheet.getLastColumn()).getValues()[0];
+    const urlColInOutput = outputHeaders3.indexOf('出品URL');
+    let newRow = 4; // デフォルト: ヘッダー3行直後
+    if (urlColInOutput !== -1) {
+      const colValues = outputSheet.getRange(1, urlColInOutput + 1, outputSheet.getLastRow(), 1).getValues();
+      for (let i = colValues.length - 1; i >= 0; i--) {
+        if (colValues[i][0] !== '') {
+          newRow = i + 2; // 1-based + 次の行
+          break;
+        }
+      }
+      if (newRow < 4) newRow = 4;
+    } else {
+      newRow = outputSheet.getLastRow() + 1;
+    }
+    Logger.log('出品DB書き込み行: ' + newRow + '行目');
     outputSheet.getRange(newRow, 1, 1, rowData.length).setValues([rowData]);
 
     Logger.log('✅ 出品DB転記完了: ' + newRow + '行目に追加');

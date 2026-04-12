@@ -93,6 +93,9 @@ function refreshEbayAccessToken(spreadsheetId) {
     // ツール設定シートを更新
     updateTokenInSheet(newAccessToken, expiryDate);
 
+    // キャッシュを無効化（新しいトークンが次の getConfig() で読み込まれるよう）
+    invalidateConfigCache();
+
     return {
       success: true,
       accessToken: newAccessToken,

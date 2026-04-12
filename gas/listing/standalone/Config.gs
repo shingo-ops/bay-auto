@@ -8,6 +8,10 @@
  */
 var CURRENT_SPREADSHEET_ID = null;
 
+/** getConfig() の実行内キャッシュ（同一実行中に設定を何度も読み直さない） */
+var _configCache     = null;
+var _configCacheId   = null;
+
 /**
  * ライブラリのスクリプトID（フォールバック用）
  *
@@ -247,6 +251,10 @@ function getPolicySheetColumnMap(sheet) {
  * @returns {Object} 設定オブジェクト { 'App ID': '...', 'User Token': '...', ... }
  */
 function getConfig() {
+  // 同一実行内でスプレッドシートIDが変わらない限りキャッシュを返す
+  const currentId = getTargetSpreadsheetId();
+  if (_configCache && _configCacheId === currentId) return _configCache;
+
   const settingsSheet = getTargetSpreadsheet().getSheetByName(SHEET_NAMES.SETTINGS);
 
   if (!settingsSheet) {
@@ -292,7 +300,15 @@ function getConfig() {
     }
   }
 
+  _configCache   = config;
+  _configCacheId = currentId;
   return config;
+}
+
+/** トークン更新後にキャッシュを無効化する */
+function invalidateConfigCache() {
+  _configCache   = null;
+  _configCacheId = null;
 }
 
 /**
