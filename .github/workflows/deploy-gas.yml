@@ -120,3 +120,8 @@ jobs:
           SCRIPT_ID="${{ secrets.EBAY_DB_CB_DEV }}"
           sed -i "s/REPLACED_BY_CI/$SCRIPT_ID/" .clasp.json
           clasp push
+
+      - name: Import condition_ja_map and sync to reference book
+        run: |
+          cd gas/ebay-db/container
+          clasp run importConditionJaMap
