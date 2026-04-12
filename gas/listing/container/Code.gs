@@ -86,7 +86,7 @@ function menuCreateListing() {
   try {
     const result = EbayLib.menuCreateListing(spreadsheetId, row);
     if (result.success) {
-      ui.alert('出品完了', result.message, ui.ButtonSet.OK);
+      ui.alert('出品完了', '1件の出品が完了しました。', ui.ButtonSet.OK);
     } else {
       ui.alert('エラー', result.message, ui.ButtonSet.OK);
     }
