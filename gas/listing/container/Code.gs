@@ -60,8 +60,8 @@ function menuCreateListing() {
   }
 
   const row = sheet.getActiveRange().getRow();
-  if (row <= 1) {
-    ui.alert('エラー', 'データ行（2行目以降）を選択してください。', ui.ButtonSet.OK);
+  if (row <= 4) {
+    ui.alert('エラー', 'データ行（5行目以降）を選択してください。', ui.ButtonSet.OK);
     return;
   }
 
@@ -109,8 +109,8 @@ function menuReviseItem() {
   }
 
   const row = sheet.getActiveRange().getRow();
-  if (row <= 1) {
-    ui.alert('エラー', 'データ行（2行目以降）を選択してください。', ui.ButtonSet.OK);
+  if (row <= 4) {
+    ui.alert('エラー', 'データ行（5行目以降）を選択してください。', ui.ButtonSet.OK);
     return;
   }
 
@@ -165,8 +165,8 @@ function menuEndListing() {
   }
 
   const row = sheet.getActiveRange().getRow();
-  if (row <= 1) {
-    ui.alert('エラー', 'データ行（2行目以降）を選択してください。', ui.ButtonSet.OK);
+  if (row <= 4) {
+    ui.alert('エラー', 'データ行（5行目以降）を選択してください。', ui.ButtonSet.OK);
     return;
   }
 
@@ -307,8 +307,8 @@ function handleEdit(e) {
     // 出品シート以外は無視
     if (sheetName !== '出品') return;
 
-    // ヘッダー行（1行目）は無視
-    if (row <= 1) return;
+    // ヘッダー行（1-4行目）は無視
+    if (row <= 4) return;
 
     const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
 

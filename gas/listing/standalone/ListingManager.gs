@@ -265,7 +265,7 @@ function getWordCheckValue(spreadsheetId, rowNumber) {
  * "出品"シートから指定行のデータを読み取り
  *
  * @param {string} spreadsheetId スプレッドシートID（省略時はデフォルト使用）
- * @param {number} rowNumber 行番号（2行目以降）
+ * @param {number} rowNumber 行番号（5行目以降）
  * @returns {Object} 出品データ
  */
 function readListingDataFromSheet(spreadsheetId, rowNumber) {
@@ -1362,13 +1362,13 @@ function transferToOutputDb(spreadsheetId, rowNumber, listingData, result) {
 
     // 実データが入っている最終行を特定（出品URL列で判定）
     const urlColInOutput = outputHeaderRow.indexOf('出品URL');
-    let newRow = 2;
+    let newRow = 5;
     if (urlColInOutput !== -1) {
       const colValues = outputSheet.getRange(1, urlColInOutput + 1, outputSheet.getLastRow(), 1).getValues();
       for (let i = colValues.length - 1; i >= 0; i--) {
         if (colValues[i][0] !== '') { newRow = i + 2; break; }
       }
-      if (newRow < 2) newRow = 2;
+      if (newRow < 5) newRow = 5;
     } else {
       newRow = outputSheet.getLastRow() + 1;
     }
@@ -1473,9 +1473,9 @@ function clearAndMoveListingRow(spreadsheetId, rowNumber) {
       throw new Error('"出品"シートが見つかりません');
     }
 
-    // 2行目以降のみ処理可能（ヘッダー保護）
-    if (rowNumber < 2) {
-      throw new Error('ヘッダー行（1行目）は処理できません');
+    // 5行目以降のみ処理可能（ヘッダー保護）
+    if (rowNumber < 5) {
+      throw new Error('ヘッダー行（1-4行目）は処理できません');
     }
 
     // ヘッダーマッピングを取得してSKU列を特定
@@ -1494,9 +1494,9 @@ function clearAndMoveListingRow(spreadsheetId, rowNumber) {
 
     // SKUが入力されている最後尾の行を検索
     const lastRow = listingSheet.getLastRow();
-    let lastDataRow = 1; // 最低でも1行目（ヘッダー行）
+    let lastDataRow = 4; // 最低でも4行目（ヘッダー直前）
 
-    for (let i = lastRow; i >= 2; i--) {
+    for (let i = lastRow; i >= 5; i--) {
       const skuValue = listingSheet.getRange(i, skuCol).getValue();
       if (skuValue && String(skuValue).trim() !== '') {
         lastDataRow = i;
@@ -1548,7 +1548,7 @@ function deleteListingRow(spreadsheetId, rowNumber) {
  * 出品実行（メイン関数）
  *
  * @param {string} spreadsheetId スプレッドシートID（省略時はデフォルト使用）
- * @param {number} rowNumber 出品する行番号（2行目以降）
+ * @param {number} rowNumber 出品する行番号（5行目以降）
  * @returns {Object} { success: boolean, sku: string, itemId: string, promotedListing?: Object, transferred: boolean, rowCleared: boolean }
  */
 function createListing(spreadsheetId, rowNumber) {
@@ -1650,8 +1650,8 @@ function processOnEdit(e, spreadsheetId) {
       return;
     }
 
-    // ヘッダー行（1行目）は処理しない
-    if (row <= 1) {
+    // ヘッダー行（1-4行目）は処理しない
+    if (row <= 4) {
       Logger.log('⚠️ ヘッダー行なのでスキップ');
       return;
     }

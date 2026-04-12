@@ -117,7 +117,7 @@ function menuSyncPolicies(spreadsheetId) {
  * "出品"シートの選択行を出品
  *
  * @param {string} spreadsheetId スプレッドシートID（省略時はデフォルト使用）
- * @param {number} rowNumber 出品する行番号（2行目以降）
+ * @param {number} rowNumber 出品する行番号（5行目以降）
  * @returns {Object} { success: boolean, result?: Object, error?: string, message?: string }
  */
 function menuCreateListing(spreadsheetId, rowNumber) {
