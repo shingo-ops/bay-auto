@@ -306,8 +306,8 @@ function readListingDataFromSheet(spreadsheetId, rowNumber) {
     quantity: getValueByHeader(rowData, headerMapping, '個数'),
     price: getValueByHeader(rowData, headerMapping, '売値($)'),
     bestOfferEnabled: String(getValueByHeader(rowData, headerMapping, 'Best Offer') || '').trim().toUpperCase() === 'ON',
-    autoAcceptPrice:  getValueByHeader(rowData, headerMapping, 'Auto Accept Price'),
-    autoDeclinePrice: getValueByHeader(rowData, headerMapping, 'Auto Decline Price'),
+    autoAcceptPrice:  getValueByHeader(rowData, headerMapping, '承認価格'),
+    autoDeclinePrice: getValueByHeader(rowData, headerMapping, '拒否価格'),
     promotedListing:  getValueByHeader(rowData, headerMapping, 'Promoted Listing'),
 
     // ワード判定
