@@ -318,6 +318,9 @@ function setupOnEditTrigger() {
     .create();
 
   Logger.log('✅ handleEdit関数をonEditトリガーとして登録しました');
+
+  // eBay最安値検索のonEditトリガーを登録
+  setupLowestPriceTrigger();
 }
 
 /**
