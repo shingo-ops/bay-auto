@@ -722,6 +722,144 @@ function endFixedPriceItem(spreadsheetId, itemId) {
 }
 
 /**
+ * Trading API: ReviseFixedPriceItem（出品更新）
+ *
+ * シートの現在の値で全フィールドを一括更新する。
+ *
+ * @param {string} spreadsheetId スプレッドシートID
+ * @param {number} rowNumber 出品シートの行番号
+ * @returns {{ success: boolean, message: string }}
+ */
+function reviseFixedPriceItem(spreadsheetId, rowNumber) {
+  try {
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+
+    // Item ID をシートから取得
+    const listingSheet = getTargetSpreadsheet().getSheetByName(SHEET_NAMES.LISTING);
+    if (!listingSheet) throw new Error('"出品"シートが見つかりません');
+
+    const headerMapping = buildHeaderMapping();
+    const itemIdCol = headerMapping['Item ID'];
+    if (!itemIdCol) throw new Error('「Item ID」列が見つかりません');
+
+    const itemId = String(listingSheet.getRange(rowNumber, itemIdCol).getValue() || '').trim();
+    if (!itemId) throw new Error('Item ID が空です。先に出品を実行してください。');
+
+    Logger.log('=== ReviseFixedPriceItem 開始: Item ID=' + itemId + ' 行=' + rowNumber + ' ===');
+
+    // トークン自動更新 → 内部 finally で CURRENT_SPREADSHEET_ID がリセットされるため再セット
+    autoRefreshTokenIfNeeded(spreadsheetId);
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+
+    const token  = getUserToken();
+    const config = getEbayConfig();
+    const apiUrl = getTradingApiUrl();
+
+    // シートから出品データを読み込み
+    const listingData = readListingDataFromSheet(spreadsheetId, rowNumber);
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId; // 再セット（readListingDataFromSheet内でリセットされる可能性）
+
+    // ConditionID を解決
+    const conditionId = resolveConditionIdFromMaster(listingData.condition, config, listingData.categoryId);
+
+    // XMLリクエスト構築
+    let xmlBody =
+      '<?xml version="1.0" encoding="utf-8"?>' +
+      '<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">' +
+        '<RequesterCredentials>' +
+          '<eBayAuthToken>' + escapeXml(token) + '</eBayAuthToken>' +
+        '</RequesterCredentials>' +
+        '<Item>' +
+          '<ItemID>' + escapeXml(itemId) + '</ItemID>' +
+          '<Title>' + escapeXml(listingData.title) + '</Title>' +
+          '<Description><![CDATA[' + (listingData.description || '') + ']]></Description>' +
+          '<StartPrice currencyID="USD">' + listingData.price + '</StartPrice>' +
+          '<Quantity>' + parseInt(listingData.quantity) + '</Quantity>' +
+          '<ConditionID>' + conditionId + '</ConditionID>';
+
+    // ConditionDescription
+    if (listingData.conditionDescription) {
+      xmlBody += '<ConditionDescription>' + escapeXml(listingData.conditionDescription) + '</ConditionDescription>';
+    }
+
+    // 画像
+    if (listingData.images && listingData.images.length > 0) {
+      xmlBody += '<PictureDetails>';
+      listingData.images.forEach(function(url) {
+        xmlBody += '<PictureURL>' + escapeXml(url) + '</PictureURL>';
+      });
+      xmlBody += '</PictureDetails>';
+    }
+
+    // Item Specifics
+    if (listingData.itemSpecifics && listingData.itemSpecifics.length > 0) {
+      xmlBody += '<ItemSpecifics>';
+      listingData.itemSpecifics.forEach(function(spec) {
+        xmlBody += '<NameValueList>' +
+          '<Name>' + escapeXml(spec.name) + '</Name>' +
+          '<Value>' + escapeXml(spec.value) + '</Value>' +
+          '</NameValueList>';
+      });
+      xmlBody += '</ItemSpecifics>';
+    }
+
+    xmlBody += '</Item></ReviseFixedPriceItemRequest>';
+
+    // API呼び出し
+    const response = UrlFetchApp.fetch(apiUrl, {
+      method: 'post',
+      headers: {
+        'X-EBAY-API-SITEID':              '0',
+        'X-EBAY-API-COMPATIBILITY-LEVEL': TRADING_API_VERSION,
+        'X-EBAY-API-CALL-NAME':           'ReviseFixedPriceItem',
+        'X-EBAY-API-APP-NAME':            config.appId,
+        'X-EBAY-API-DEV-NAME':            config.devId,
+        'X-EBAY-API-CERT-NAME':           config.certId,
+        'Content-Type':                   'text/xml;charset=utf-8'
+      },
+      payload: xmlBody,
+      muteHttpExceptions: true
+    });
+
+    const statusCode   = response.getResponseCode();
+    const responseText = response.getContentText();
+    Logger.log('ReviseFixedPriceItem Response: ' + statusCode);
+
+    if (statusCode !== 200) {
+      throw new Error('HTTPエラー(' + statusCode + '): ' + responseText);
+    }
+
+    const root = XmlService.parse(responseText).getRootElement();
+    const ns   = XmlService.getNamespace('urn:ebay:apis:eBLBaseComponents');
+    const ack  = (root.getChild('Ack', ns) || { getText: function() { return ''; } }).getText();
+
+    if (ack === 'Success' || ack === 'Warning') {
+      Logger.log('✅ 更新成功: Item ID=' + itemId);
+      if (ack === 'Warning') {
+        const errEl = root.getChild('Errors', ns);
+        if (errEl) Logger.log('⚠️ Warning: ' + (errEl.getChild('ShortMessage', ns) || { getText: function() { return ''; } }).getText());
+      }
+      return {
+        success: true,
+        message: '✅ 更新が完了しました\n\nItem ID: ' + itemId + '\n商品名: ' + listingData.title
+      };
+    }
+
+    const errEl  = root.getChild('Errors', ns);
+    const errMsg = errEl
+      ? (errEl.getChild('ShortMessage', ns) || { getText: function() { return responseText; } }).getText()
+      : responseText;
+    throw new Error('APIエラー: ' + errMsg);
+
+  } catch (e) {
+    Logger.log('❌ ReviseFixedPriceItem エラー: ' + e.toString());
+    return { success: false, message: '❌ 更新エラー:\n\n' + e.toString() };
+  } finally {
+    CURRENT_SPREADSHEET_ID = null;
+  }
+}
+
+/**
  * 出品DBのスプレッドシートIDを返す
  *
  * @param {string} spreadsheetId 出品元スプレッドシートID

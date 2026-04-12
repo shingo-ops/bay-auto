@@ -40,7 +40,8 @@ function onOpen() {
 
   ui.createMenu('出品管理')
     .addItem('出品', 'menuCreateListing')
-    .addItem('更新', 'menuUpdateListing')
+    .addSeparator()
+    .addItem('更新', 'menuReviseItem')
     .addItem('取り下げ', 'menuEndListing')
     .addToUi();
 }
@@ -95,15 +96,15 @@ function menuCreateListing() {
 }
 
 /**
- * 【更新】アクティブ行の出品済み商品を更新する
+ * 【更新】アクティブ行の出品済み商品を全フィールド更新する
  */
-function menuUpdateListing() {
+function menuReviseItem() {
   const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
   const ui = SpreadsheetApp.getUi();
 
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
   if (sheet.getName() !== '出品') {
-    ui.alert('エラー', '出品シートを選択してください。', ui.ButtonSet.OK);
+    ui.alert('エラー', '「出品」シートを選択してください。', ui.ButtonSet.OK);
     return;
   }
 
@@ -113,18 +114,40 @@ function menuUpdateListing() {
     return;
   }
 
-  const response = ui.alert(
-    '更新確認',
-    row + '行目の出品情報を更新します。\n実行しますか？',
-    ui.ButtonSet.OK_CANCEL
-  );
-  if (response !== ui.Button.OK) return;
+  const headerMapping = _buildListingHeaderMapping(sheet);
+  const itemIdCol = headerMapping['Item ID'];
+  if (!itemIdCol) {
+    ui.alert('エラー', '「Item ID」列が見つかりません。', ui.ButtonSet.OK);
+    return;
+  }
 
-  const result = EbayLib.menuUpdateListing(spreadsheetId, row);
-  if (result.success) {
-    ui.alert('更新完了', result.message, ui.ButtonSet.OK);
-  } else {
-    ui.alert('エラー', result.message, ui.ButtonSet.OK);
+  const itemId = String(sheet.getRange(row, itemIdCol).getValue() || '').trim();
+  if (!itemId) {
+    ui.alert('エラー', row + '行目の Item ID が空です。\n先に出品を実行してください。', ui.ButtonSet.OK);
+    return;
+  }
+
+  const titleCol = headerMapping['タイトル'];
+  const title    = titleCol ? String(sheet.getRange(row, titleCol).getValue() || '') : '（タイトル不明）';
+
+  const response = ui.alert(
+    '出品更新確認',
+    'Item ID: ' + itemId + '\n' +
+    '商品名: ' + title + '\n\n' +
+    '現在の値で全フィールドを更新しますか？',
+    ui.ButtonSet.YES_NO
+  );
+  if (response !== ui.Button.YES) return;
+
+  try {
+    const result = EbayLib.reviseFixedPriceItem(spreadsheetId, row);
+    if (result.success) {
+      ui.alert('更新完了', result.message, ui.ButtonSet.OK);
+    } else {
+      ui.alert('エラー', result.message, ui.ButtonSet.OK);
+    }
+  } catch (e) {
+    ui.alert('エラー', '❌ 更新エラー:\n' + e.toString(), ui.ButtonSet.OK);
   }
 }
 
