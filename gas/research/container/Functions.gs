@@ -585,14 +585,29 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
       specUrl = itemUrl;
     }
 
-    // eBay APIから商品情報を取得
-    SpreadsheetApp.getActiveSpreadsheet().toast('商品情報を取得中...', 'eBay API (' + policyLabel + ')', 10);
+    // _cache から商品情報を取得（キャッシュ優先、空の場合のみ API フォールバック）
+    SpreadsheetApp.getActiveSpreadsheet().toast('商品情報を取得中...', '出品準備 (' + policyLabel + ')', 10);
 
-    // Item URLから基本情報を取得（タイトル用、カテゴリは整合性チェック用）
-    const itemInfo = getProductInfoFromUrl(itemUrl.toString());
-
-    // スペックURLからスペック情報を取得（カテゴリ、Brand, UPC, EAN, MPN, Item Specifics）
-    const specInfo = getProductInfoFromUrl(specUrl.toString());
+    let itemInfo, specInfo;
+    const cacheRow = getCacheRow2();
+    if (cacheRow) {
+      Logger.log('[転記] _cache ヒット: ' + cacheRow.itemUrl);
+      const fromCache = {
+        item:      { categoryId: cacheRow.categoryId, categoryPath: cacheRow.categoryName },
+        category:  { categoryId: cacheRow.categoryId, categoryName: cacheRow.categoryName, fullPath: cacheRow.categoryName },
+        specifics: cacheRow.specifics,
+        title:     cacheRow.title || '',
+        itemId:    extractItemIdFromUrl(cacheRow.itemUrl || itemUrl.toString()),
+        imageUrl:  ''
+      };
+      itemInfo = fromCache;
+      specInfo  = fromCache;
+    } else {
+      // _cache が空の場合のみ API を呼び出す
+      Logger.log('[転記] _cache ミス: API フォールバック');
+      itemInfo = getProductInfoFromUrl(itemUrl.toString());
+      specInfo  = getProductInfoFromUrl(specUrl.toString());
+    }
 
     // 転記先スプレッドシートを開く
     const config = getEbayConfig();
