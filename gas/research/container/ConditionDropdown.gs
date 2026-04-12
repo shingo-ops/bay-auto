@@ -295,64 +295,182 @@ function getConditionIdByJaDisplay(categoryId, jaDisplay) {
 }
 
 /**
- * condition_ja_map のグループ A〜D における condition_id "3000" の表示を「中古品」に一括更新
- *
- * GASエディタから一度だけ手動実行する管理用関数。
- * 実行後は condition_ja_map シートの ja_map_json が書き換わる。
+ * condition_ja_map の全グループの ja_map_json を確認用に返す（clasp run 用）
  */
-function updateCondition3000ToChukuhin() {
+function inspectConditionJaMap() {
   const categoryMasterSs = openCategoryMasterSs();
-  if (!categoryMasterSs) {
-    Logger.log('[updateCondition3000] カテゴリマスタが開けません');
-    return;
-  }
+  if (!categoryMasterSs) return 'カテゴリマスタが開けません';
 
   const sheet = categoryMasterSs.getSheetByName(SHEET_NAMES.CONDITION_JA_MAP);
-  if (!sheet) {
-    Logger.log('[updateCondition3000] ' + SHEET_NAMES.CONDITION_JA_MAP + ' シートが見つかりません');
-    return;
-  }
+  if (!sheet) return SHEET_NAMES.CONDITION_JA_MAP + ' シートが見つかりません';
 
   const data    = sheet.getDataRange().getValues();
   const headers = data[0];
   const groupIdx  = headers.indexOf('condition_group');
   const jaMapIdx  = headers.indexOf('ja_map_json');
 
-  if (groupIdx === -1 || jaMapIdx === -1) {
-    Logger.log('[updateCondition3000] condition_group または ja_map_json 列が見つかりません');
-    return;
+  const result = [];
+  for (let i = 1; i < data.length; i++) {
+    const group = String(data[i][groupIdx] || '');
+    if (!group) continue;
+    let jaMap = {};
+    try { jaMap = JSON.parse(String(data[i][jaMapIdx] || '{}')); } catch (e) {}
+    result.push('=== グループ ' + group + ' ===');
+    Object.keys(jaMap).forEach(function(id) { result.push('  ' + id + ': ' + jaMap[id]); });
   }
+  return result.join('\n');
+}
 
-  const targetGroups = ['A', 'B', 'C', 'D'];
+/**
+ * 指定グループの condition_id "3000" を「中古品」に更新（F・H 用）
+ */
+function updateCondition3000GroupsFH() {
+  return _updateCondition3000ForGroups(['F', 'H']);
+}
+
+/**
+ * メルカリ表現に合わせて全グループの ja_map_json を一括更新
+ *
+ * 変更内容:
+ *   E  : 2750 ほぼ新品          → 目立った傷や汚れなし
+ *   G  : 2750 ほぼ新品          → 未使用に近い
+ *        4000 やや傷や汚れあり  → 目立った傷や汚れなし
+ *        5000 傷や汚れあり      → やや傷や汚れあり
+ *   K  : 3000 目立った傷や汚れなし（使用感あり） → やや傷や汚れあり
+ *   M  : 3000 目立った傷や汚れなし（使用感あり） → やや傷や汚れあり
+ *   Q  : 3010 傷や汚れあり      → やや傷や汚れあり
+ *   R  : 3010 傷や汚れあり      → やや傷や汚れあり
+ *   W  : 2750 ほぼ新品          → 目立った傷や汚れなし
+ */
+function updateAllGroupsMercariAligned() {
+  const PATCH = {
+    'E': { '2750': '目立った傷や汚れなし' },
+    'G': { '2750': '未使用に近い', '4000': '目立った傷や汚れなし', '5000': 'やや傷や汚れあり' },
+    'K': { '3000': 'やや傷や汚れあり' },
+    'M': { '3000': 'やや傷や汚れあり' },
+    'Q': { '3010': 'やや傷や汚れあり' },
+    'R': { '3010': 'やや傷や汚れあり' },
+    'W': { '2750': '目立った傷や汚れなし' }
+  };
+
+  const categoryMasterSs = openCategoryMasterSs();
+  if (!categoryMasterSs) return 'カテゴリマスタが開けません';
+
+  const sheet = categoryMasterSs.getSheetByName(SHEET_NAMES.CONDITION_JA_MAP);
+  if (!sheet) return SHEET_NAMES.CONDITION_JA_MAP + ' シートが見つかりません';
+
+  const data     = sheet.getDataRange().getValues();
+  const headers  = data[0];
+  const groupIdx = headers.indexOf('condition_group');
+  const jaMapIdx = headers.indexOf('ja_map_json');
+
+  if (groupIdx === -1 || jaMapIdx === -1) return 'condition_group または ja_map_json 列が見つかりません';
+
   const log = [];
 
   for (let i = 1; i < data.length; i++) {
     const group = String(data[i][groupIdx]);
-    if (targetGroups.indexOf(group) === -1) continue;
-
-    const jaMapJson = data[i][jaMapIdx];
-    if (!jaMapJson) continue;
+    if (!PATCH[group]) continue;
 
     let jaMap;
-    try {
-      jaMap = JSON.parse(jaMapJson);
-    } catch (e) {
-      Logger.log('[updateCondition3000] パースエラー (行' + (i + 1) + '): ' + e);
-      continue;
+    try { jaMap = JSON.parse(String(data[i][jaMapIdx] || '{}')); } catch (e) { continue; }
+
+    const patch   = PATCH[group];
+    let changed   = false;
+
+    Object.keys(patch).forEach(function(id) {
+      if (jaMap.hasOwnProperty(id)) {
+        const oldVal = jaMap[id];
+        jaMap[id]    = patch[id];
+        log.push('グループ ' + group + ' [' + id + ']: "' + oldVal + '" → "' + patch[id] + '"');
+        changed = true;
+      }
+    });
+
+    if (changed) {
+      sheet.getRange(i + 1, jaMapIdx + 1).setValue(JSON.stringify(jaMap));
     }
+  }
+
+  const summary = log.length > 0
+    ? '更新完了（' + log.length + '件）:\n' + log.join('\n')
+    : '更新対象なし';
+  Logger.log('[updateAllGroupsMercariAligned] ' + summary);
+  return summary;
+}
+
+/**
+ * グループG に属するカテゴリ一覧を返す（調査用）
+ */
+function inspectGroupGCategories() {
+  const categoryMasterSs = openCategoryMasterSs();
+  if (!categoryMasterSs) return 'カテゴリマスタが開けません';
+
+  const sheet = categoryMasterSs.getSheetByName(SHEET_NAMES.CATEGORY_MASTER);
+  if (!sheet) return SHEET_NAMES.CATEGORY_MASTER + ' シートが見つかりません';
+
+  const data    = sheet.getDataRange().getValues();
+  const headers = data[0];
+  const catIdIdx   = headers.indexOf('category_id');
+  const catNameIdx = headers.indexOf('category_name');
+  const groupIdx   = headers.indexOf('condition_group');
+
+  if (catIdIdx === -1 || groupIdx === -1) return 'category_id または condition_group 列が見つかりません';
+
+  const result = ['=== グループ G のカテゴリ一覧 ==='];
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][groupIdx]) !== 'G') continue;
+    const id   = String(data[i][catIdIdx]   || '');
+    const name = catNameIdx >= 0 ? String(data[i][catNameIdx] || '') : '';
+    result.push(id + (name ? ': ' + name : ''));
+  }
+  if (result.length === 1) result.push('（該当カテゴリなし）');
+  return result.join('\n');
+}
+
+/**
+ * 共通: 指定グループの 3000 を「中古品」に更新
+ */
+function _updateCondition3000ForGroups(targetGroups) {
+  const categoryMasterSs = openCategoryMasterSs();
+  if (!categoryMasterSs) return 'カテゴリマスタが開けません';
+
+  const sheet = categoryMasterSs.getSheetByName(SHEET_NAMES.CONDITION_JA_MAP);
+  if (!sheet) return SHEET_NAMES.CONDITION_JA_MAP + ' シートが見つかりません';
+
+  const data     = sheet.getDataRange().getValues();
+  const headers  = data[0];
+  const groupIdx = headers.indexOf('condition_group');
+  const jaMapIdx = headers.indexOf('ja_map_json');
+
+  if (groupIdx === -1 || jaMapIdx === -1) return 'condition_group または ja_map_json 列が見つかりません';
+
+  const log = [];
+  for (let i = 1; i < data.length; i++) {
+    const group = String(data[i][groupIdx]);
+    if (targetGroups.indexOf(group) === -1) continue;
+
+    let jaMap;
+    try { jaMap = JSON.parse(String(data[i][jaMapIdx] || '{}')); } catch (e) { continue; }
 
     if (jaMap.hasOwnProperty('3000')) {
       const oldValue = jaMap['3000'];
       jaMap['3000'] = '中古品';
       sheet.getRange(i + 1, jaMapIdx + 1).setValue(JSON.stringify(jaMap));
       log.push('グループ ' + group + ': "' + oldValue + '" → "中古品"');
-      Logger.log('[updateCondition3000] ' + log[log.length - 1]);
     }
   }
 
   const summary = log.length > 0
     ? '更新完了（' + log.length + '件）: ' + log.join(' / ')
-    : '更新対象なし（グループA〜Dに "3000" キーが見つかりませんでした）';
+    : '更新対象なし';
   Logger.log('[updateCondition3000] ' + summary);
   return summary;
+}
+
+/**
+ * condition_ja_map のグループ A〜D における condition_id "3000" の表示を「中古品」に一括更新
+ */
+function updateCondition3000ToChukuhin() {
+  return _updateCondition3000ForGroups(['A', 'B', 'C', 'D']);
 }
