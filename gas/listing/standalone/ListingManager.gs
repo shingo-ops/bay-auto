@@ -1326,21 +1326,21 @@ function transferToOutputDb(spreadsheetId, rowNumber, listingData, result) {
     const sourceValues = sourceSheet.getRange(rowNumber, 1, 1, srcLastCol).getValues()[0];
     const sourceHeaderMapping = buildHeaderMapping(); // 出品シート: 列名 → 1-based index
 
-    // 出品DBのヘッダー行（1行目）を取得
-    const outputHeaderRow = outputSheet.getRange(1, 1, 1, outputSheet.getLastColumn()).getValues()[0];
+    // 出品DBのヘッダー行（1行目）を取得し、不可視文字を除去
+    const outputHeaderRowRaw = outputSheet.getRange(1, 1, 1, outputSheet.getLastColumn()).getValues()[0];
+    const outputHeaderRow = outputHeaderRowRaw.map(function(h) { return String(h || '').trim(); });
 
     // 出品DB列名 → 0-based index のマップ
     const outputColMap = {};
     outputHeaderRow.forEach(function(h, i) {
-      if (h) outputColMap[String(h).trim()] = i;
+      if (h) outputColMap[h] = i;
     });
 
     // 出品DBの列構造に合わせて書き込み配列を生成（列名ベースのマッピング）
     const outputRow = new Array(outputHeaderRow.length).fill('');
     outputHeaderRow.forEach(function(h, i) {
-      const colName = String(h || '').trim();
-      if (!colName) return;
-      const srcIdx = sourceHeaderMapping[colName];
+      if (!h) return;
+      const srcIdx = sourceHeaderMapping[h];
       if (srcIdx) {
         outputRow[i] = sourceValues[srcIdx - 1];
       }
@@ -1498,6 +1498,124 @@ function debugTransferHeaders(spreadsheetId) {
 
   } catch (e) {
     Logger.log('❌ debugTransferHeaders エラー: ' + e.toString());
+  } finally {
+    CURRENT_SPREADSHEET_ID = null;
+  }
+}
+
+/**
+ * clasp run 用: 出品DBの1行目(ヘッダー)と指定行(データ)を読み取り、空欄列を報告する
+ *
+ * @param {string} dbSpreadsheetId 出品DBスプレッドシートID
+ * @param {number} dataRow データ行番号（省略時は5）
+ */
+function inspectOutputDbRow(dbSpreadsheetId, dataRow) {
+  try {
+    const row = dataRow || 5;
+    const ss = SpreadsheetApp.openById(dbSpreadsheetId);
+    const sheet = ss.getSheetByName('出品');
+    if (!sheet) return '⚠️ 出品DBに「出品」シートが見つかりません';
+
+    const lastCol = sheet.getLastColumn();
+    const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    const values  = sheet.getRange(row, 1, 1, lastCol).getValues()[0];
+
+    const lines = [];
+    const emptyList = [];
+    const filledList = [];
+
+    lines.push('=== 出品DB「出品」シート 行' + row + ' 内容 ===');
+    lines.push('');
+
+    for (var i = 0; i < headers.length; i++) {
+      var h = String(headers[i] || '').trim();
+      var v = values[i];
+      var vStr = (v === null || v === undefined || v === '') ? '（空）' : String(v);
+      lines.push('  [' + (i + 1) + '] ' + (h || '（ヘッダーなし）') + ': ' + vStr);
+      if (v === null || v === undefined || v === '') {
+        emptyList.push('  [' + (i + 1) + '] ' + (h || '（ヘッダーなし）'));
+      } else {
+        filledList.push('  [' + (i + 1) + '] ' + h);
+      }
+    }
+
+    lines.push('');
+    lines.push('=== 値あり列（' + filledList.length + '列）===');
+    filledList.forEach(function(l) { lines.push(l); });
+
+    lines.push('');
+    lines.push('=== 空欄列（' + emptyList.length + '列）===');
+    if (emptyList.length === 0) {
+      lines.push('  なし（全列に値あり）');
+    } else {
+      emptyList.forEach(function(l) { lines.push(l); });
+    }
+
+    return lines.join('\n');
+  } catch (e) {
+    return 'エラー: ' + e.toString() + '\n' + e.stack;
+  }
+}
+
+/**
+ * clasp run 用: debugTransferHeaders の結果を文字列で返す
+ * Logger.log ではなく return value として clasp run に出力する
+ *
+ * @param {string} spreadsheetId 出品スプレッドシートID
+ */
+function getTransferHeadersResult(spreadsheetId) {
+  try {
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+    const config = getEbayConfig();
+    const outputDbId = config.outputDbSpreadsheetId;
+    const lines = [];
+
+    const sourceSheet = getTargetSpreadsheet().getSheetByName(SHEET_NAMES.LISTING);
+    const sourceHeaders = sourceSheet.getRange(1, 1, 1, sourceSheet.getLastColumn()).getValues()[0].filter(Boolean);
+    lines.push('=== 出品シート ヘッダー（' + sourceHeaders.length + '列）===');
+    sourceHeaders.forEach(function(h, i) { lines.push('  ' + (i + 1) + ': ' + h); });
+
+    if (!outputDbId) {
+      lines.push('⚠️ 出品DBが設定されていません');
+      return lines.join('\n');
+    }
+
+    const outputSheet = SpreadsheetApp.openById(outputDbId).getSheetByName('出品');
+    if (!outputSheet) {
+      lines.push('⚠️ 出品DBに「出品」シートが見つかりません');
+      return lines.join('\n');
+    }
+    const outputHeadersRaw = outputSheet.getRange(1, 1, 1, outputSheet.getLastColumn()).getValues()[0];
+    const outputHeaders = outputHeadersRaw.filter(Boolean);
+    lines.push('');
+    lines.push('=== 出品DB ヘッダー（' + outputHeaders.length + '列）===');
+    outputHeadersRaw.forEach(function(h, i) { if (h) lines.push('  ' + (i + 1) + ': ' + h); });
+
+    lines.push('');
+    lines.push('=== 転記対応チェック ===');
+    const missing = [];
+    outputHeadersRaw.forEach(function(h, i) {
+      if (!h) return;
+      const srcIdx = sourceHeaders.indexOf(h);
+      if (srcIdx !== -1) {
+        lines.push('  ✅ DB[' + (i + 1) + '] "' + h + '" ← 出品シート[' + (srcIdx + 1) + ']');
+      } else {
+        lines.push('  ❌ DB[' + (i + 1) + '] "' + h + '" ← 転記不可');
+        missing.push(h);
+      }
+    });
+
+    lines.push('');
+    lines.push('=== 転記不可列（出品DB側にあるが出品シートにない） ===');
+    if (missing.length === 0) {
+      lines.push('  なし（全列転記可能）');
+    } else {
+      missing.forEach(function(h) { lines.push('  - ' + h); });
+    }
+
+    return lines.join('\n');
+  } catch (e) {
+    return 'エラー: ' + e.toString() + '\n' + e.stack;
   } finally {
     CURRENT_SPREADSHEET_ID = null;
   }

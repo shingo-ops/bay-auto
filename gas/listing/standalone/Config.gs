@@ -431,7 +431,7 @@ function buildHeaderMapping() {
   const mapping = {};
 
   for (let i = 0; i < headers.length; i++) {
-    const headerName = headers[i];
+    const headerName = String(headers[i] || '').trim();
     if (headerName) {
       mapping[headerName] = i + 1; // 列番号は1-based
     }
