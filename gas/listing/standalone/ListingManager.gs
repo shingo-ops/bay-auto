@@ -27,6 +27,102 @@ function getListingSheetHeaderMapping(spreadsheetId) {
 }
 
 /**
+ * Vero/禁止ワードシートとタイトルを照合してワード判定列に結果を書き込む
+ * 優先度: 禁止ワード > VERO > 該当なし
+ *
+ * @param {Sheet} sheet 出品シート
+ * @param {number} rowNumber 対象行番号
+ * @param {string} title タイトル文字列
+ * @param {Object} headerMapping ヘッダーマッピング {列名: 列番号(1-based)}
+ * @param {string} spreadsheetId スプレッドシートID
+ */
+function checkAndWriteWordJudgement(sheet, rowNumber, title, headerMapping, spreadsheetId) {
+  try {
+    if (!title || !title.trim()) return;
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+
+    // ワード判定列を特定
+    const wordCheckCol = headerMapping['ワード判定'];
+    if (!wordCheckCol) {
+      Logger.log('⚠️ ワード判定列が見つかりません');
+      return;
+    }
+
+    // Vero/禁止ワードシートを取得
+    const ss = getTargetSpreadsheet(spreadsheetId);
+    const veroSheet = ss.getSheetByName('Vero/禁止ワード');
+    if (!veroSheet) {
+      Logger.log('⚠️ Vero/禁止ワードシートが見つかりません');
+      return;
+    }
+
+    // ヘッダー行からVERO列・禁止ワード列を特定
+    const veroLastCol = veroSheet.getLastColumn();
+    const veroLastRow = veroSheet.getLastRow();
+    if (veroLastRow < 2) return;
+
+    const veroHeaders = veroSheet.getRange(1, 1, 1, veroLastCol).getValues()[0];
+    const veroColIdx = veroHeaders.findIndex(function(h) {
+      return String(h || '').trim() === 'VERO';
+    });
+    const kinshiColIdx = veroHeaders.findIndex(function(h) {
+      return String(h || '').trim() === '禁止ワード';
+    });
+
+    if (veroColIdx === -1 && kinshiColIdx === -1) {
+      Logger.log('⚠️ VERO列・禁止ワード列が見つかりません');
+      return;
+    }
+
+    // ワードリストを取得
+    const veroData = veroSheet.getRange(2, 1, veroLastRow - 1, veroLastCol).getValues();
+    const veroWords = [];
+    const kinshiWords = [];
+
+    veroData.forEach(function(row) {
+      if (veroColIdx !== -1) {
+        const w = String(row[veroColIdx] || '').trim();
+        if (w) veroWords.push(w);
+      }
+      if (kinshiColIdx !== -1) {
+        const w = String(row[kinshiColIdx] || '').trim();
+        if (w) kinshiWords.push(w);
+      }
+    });
+
+    // タイトルと照合（大文字小文字無視）
+    const titleLower = title.toLowerCase();
+
+    const hitKinshi = kinshiWords.filter(function(w) {
+      return titleLower.indexOf(w.toLowerCase()) !== -1;
+    });
+    const hitVero = veroWords.filter(function(w) {
+      return titleLower.indexOf(w.toLowerCase()) !== -1;
+    });
+
+    // 判定結果（禁止ワード > 文字数オーバー > VERO > 該当なし）
+    const isTitleOver = title.length > 80;
+    let result = '該当なし';
+    if (hitKinshi.length > 0) {
+      result = '禁止: ' + hitKinshi.join(', ');
+    } else if (isTitleOver) {
+      result = '文字数オーバー';
+    } else if (hitVero.length > 0) {
+      result = 'VERO: ' + hitVero.join(', ');
+    }
+
+    // ワード判定列に書き込む
+    sheet.getRange(rowNumber, wordCheckCol).setValue(result);
+    Logger.log('ワード判定: 行' + rowNumber + ' → ' + result);
+
+  } catch(e) {
+    Logger.log('⚠️ ワード判定エラー（処理継続）: ' + e.toString());
+  } finally {
+    CURRENT_SPREADSHEET_ID = null;
+  }
+}
+
+/**
  * ヘッダーマッピングから値を取得
  *
  * @param {Array} rowData 行データ配列
@@ -334,6 +430,11 @@ function readListingDataFromSheet(spreadsheetId, rowNumber) {
   }
 
   Logger.log('データ読み取り完了: SKU=' + data.sku);
+
+  // データ読み取り時にワード判定を実行
+  if (data.title) {
+    checkAndWriteWordJudgement(listingSheet, rowNumber, data.title, buildHeaderMapping(), spreadsheetId);
+  }
 
   return data;
 }
@@ -942,6 +1043,31 @@ function reviseFixedPriceItem(spreadsheetId, rowNumber) {
         const errEl = root.getChild('Errors', ns);
         if (errEl) Logger.log('⚠️ Warning: ' + (errEl.getChild('ShortMessage', ns) || { getText: function() { return ''; } }).getText());
       }
+      // 更新タイムスタンプを同じスプレッドシート（出品DB）の同じ行に書き込む
+      try {
+        const now = new Date();
+        const tsStr = Utilities.formatDate(now, 'Asia/Tokyo', 'yyyy/MM/dd/HH:mm:ss');
+
+        // 現在のスプレッドシート（出品DB）の出品シートを取得
+        const currentSS = getTargetSpreadsheet(spreadsheetId);
+        const currentSheet = currentSS.getSheetByName(SHEET_NAMES.LISTING);
+        if (currentSheet) {
+          const currentHeaders = currentSheet.getRange(1, 1, 1, currentSheet.getLastColumn()).getValues()[0];
+          const currentMap = {};
+          currentHeaders.forEach(function(h, i) { if (h) currentMap[String(h).trim()] = i + 1; });
+
+          const tsCol = currentMap['更新タイムスタンプ'];
+          if (tsCol) {
+            currentSheet.getRange(rowNumber, tsCol).setValue(tsStr);
+            Logger.log('✅ 更新タイムスタンプ書き込み: ' + tsStr + ' / 行' + rowNumber);
+          } else {
+            Logger.log('⚠️ 更新タイムスタンプ列が見つかりません');
+          }
+        }
+      } catch(tsErr) {
+        Logger.log('⚠️ 更新タイムスタンプ書き込みエラー（更新処理は完了）: ' + tsErr.toString());
+      }
+
       return {
         success: true,
         message: '✅ 更新が完了しました\n\nItem ID: ' + itemId + '\n商品名: ' + listingData.title
@@ -957,6 +1083,70 @@ function reviseFixedPriceItem(spreadsheetId, rowNumber) {
   } catch (e) {
     Logger.log('❌ ReviseFixedPriceItem エラー: ' + e.toString());
     return { success: false, message: '❌ 更新エラー:\n\n' + e.toString() };
+  } finally {
+    CURRENT_SPREADSHEET_ID = null;
+  }
+}
+
+/**
+ * eBayの数量を0に更新する（在庫切れ処理）
+ */
+function reviseQuantityToZero(spreadsheetId, rowNumber, itemId) {
+  try {
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+
+    autoRefreshTokenIfNeeded(spreadsheetId);
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+
+    const config = getEbayConfig();
+    const token = config.userToken;
+    const apiUrl = 'https://api.ebay.com/ws/api.dll';
+
+    const xmlRequest = '<?xml version="1.0" encoding="utf-8"?>' +
+      '<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">' +
+      '<RequesterCredentials>' +
+      '<eBayAuthToken>' + token + '</eBayAuthToken>' +
+      '</RequesterCredentials>' +
+      '<Item>' +
+      '<ItemID>' + itemId + '</ItemID>' +
+      '<Quantity>0</Quantity>' +
+      '</Item>' +
+      '</ReviseFixedPriceItemRequest>';
+
+    const options = {
+      method: 'POST',
+      headers: {
+        'X-EBAY-API-CALL-NAME': 'ReviseFixedPriceItem',
+        'X-EBAY-API-SITEID': '0',
+        'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+        'X-EBAY-API-APP-NAME': config.appId,
+        'X-EBAY-API-DEV-NAME': config.devId,
+        'X-EBAY-API-CERT-NAME': config.certId,
+        'Content-Type': 'text/xml'
+      },
+      payload: xmlRequest,
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch(apiUrl, options);
+    const ns = XmlService.getNamespace('urn:ebay:apis:eBLBaseComponents');
+    const root = XmlService.parse(response.getContentText()).getRootElement();
+    const ack = root.getChildText('Ack', ns);
+
+    if (ack === 'Success' || ack === 'Warning') {
+      Logger.log('✅ 数量0更新成功: Item ID=' + itemId);
+      return { success: true, message: '✅ 数量を0にしました。' };
+    }
+
+    const errEl = root.getChild('Errors', ns);
+    const errMsg = errEl
+      ? (errEl.getChildText('ShortMessage', ns) || '不明なエラー')
+      : '不明なエラー';
+    return { success: false, message: errMsg };
+
+  } catch(e) {
+    Logger.log('❌ reviseQuantityToZero エラー: ' + e.toString());
+    return { success: false, message: e.toString() };
   } finally {
     CURRENT_SPREADSHEET_ID = null;
   }
@@ -1421,8 +1611,8 @@ function transferToOutputDb(spreadsheetId, rowNumber, listingData, result) {
     // 出品ステータス（列名ゆれに対応）
     const statusKey = ('出品ステータス' in outputColMap) ? '出品ステータス' : 'ステータス';
     if (statusKey in outputColMap) {
-      outputRow[outputColMap[statusKey]] = 'Active';
-      Logger.log('ステータスを設定: Active');
+      outputRow[outputColMap[statusKey]] = '出品中';
+      Logger.log('ステータスを設定: 出品中');
     } else {
       Logger.log('⚠️ 出品DBに "出品ステータス"/"ステータス" 列が見つかりません');
     }
@@ -1566,12 +1756,15 @@ function transferToOutputDb_phase1(spreadsheetId, rowNumber, listingData, output
       }
     });
 
-    // --- SKU予約：空行を探してSKUだけ先に書き込む ---
-    const skuColInOutput = outputHeaderRow.indexOf('SKU');
-    const urlColInOutput = outputHeaderRow.indexOf('出品URL');
+    // --- SKU予約：書き込み行を特定してSKUだけ先に書き込む ---
+    // SKU・Item ID・出品タイムスタンプ列のインデックスを取得
+    const skuColInOutput    = outputHeaderRow.indexOf('SKU');
+    const itemIdColInOutput = outputHeaderRow.indexOf('Item ID');
+    const tsColInOutput     = outputHeaderRow.indexOf('出品タイムスタンプ');
+
     let newRow = null;
 
-    // 既存行にSKUが一致する行があれば再利用（冪等性確保）
+    // Step1: 既存行に同じSKUがあれば再利用（冪等性確保）
     if (skuColInOutput !== -1 && listingData.sku) {
       const lastRow = outputSheet.getLastRow();
       if (lastRow >= 5) {
@@ -1586,35 +1779,72 @@ function transferToOutputDb_phase1(spreadsheetId, rowNumber, listingData, output
       }
     }
 
-    // SKU一致行がなければ空行を探す（出品URL列が空の行）
+    // Step2: SKU一致行がなければ「完全な空行」を探す
+    // 判定基準：SKU・Item ID・出品タイムスタンプ が全て空
     if (!newRow) {
       const lastRow = outputSheet.getLastRow();
-      if (urlColInOutput !== -1 && lastRow >= 5) {
-        const urlValues = outputSheet.getRange(5, urlColInOutput + 1, lastRow - 4, 1).getValues();
-        for (let i = 0; i < urlValues.length; i++) {
-          if (urlValues[i][0] === '') {
+      if (lastRow >= 5) {
+        const checkRange = outputSheet.getRange(5, 1, lastRow - 4, outputHeaderRow.length);
+        const allValues = checkRange.getValues(); // raw値で取得（日付誤認識なし）
+
+        for (let i = 0; i < allValues.length; i++) {
+          const rowData = allValues[i];
+
+          const skuVal = skuColInOutput    !== -1 ? String(rowData[skuColInOutput]    || '').trim() : '';
+          const idVal  = itemIdColInOutput !== -1 ? String(rowData[itemIdColInOutput]  || '').trim() : '';
+          const tsVal  = tsColInOutput     !== -1 ? String(rowData[tsColInOutput]      || '').trim() : '';
+
+          // 3列すべて空の行のみ再利用可能
+          if (skuVal === '' && idVal === '' && tsVal === '') {
             newRow = i + 5;
-            Logger.log('空行を再利用: ' + newRow + '行目');
+            Logger.log('完全空行を再利用: ' + newRow + '行目');
             break;
           }
         }
       }
-      // 空行もなければ最終行の次
-      if (!newRow) newRow = Math.max(outputSheet.getLastRow() + 1, 5);
+      // 空行が見つからなければ最終行の次
+      if (!newRow) {
+        newRow = Math.max(outputSheet.getLastRow() + 1, 5);
+        Logger.log('新規行に追加: ' + newRow + '行目');
+      }
     }
 
-    // SKUだけ先に予約書き込み（他のデータは後でsetValuesで上書き）
+    // SKUを先行予約書き込み
     if (skuColInOutput !== -1 && listingData.sku) {
       outputSheet.getRange(newRow, skuColInOutput + 1).setValue(listingData.sku);
       Logger.log('SKU予約完了: ' + newRow + '行目 / SKU: ' + listingData.sku);
     }
 
-    // outputRowにSKUをセット（setValuesで上書きされても同じ値）
-    outputRow[skuColInOutput] = listingData.sku;
+    // outputRowにSKUをセット
+    if (skuColInOutput !== -1) {
+      outputRow[skuColInOutput] = listingData.sku;
+    }
 
     // 書き込み実行
     outputSheet.getRange(newRow, 1, 1, outputRow.length).setValues([outputRow]);
     Logger.log('✅ 出品DB Phase1転記完了: ' + newRow + '行目 / SKU: ' + listingData.sku);
+
+    // 状態列のプルダウンを出品シートからDBシートにコピー
+    const conditionColName = '状態';
+    const srcConditionCol = sourceHeaderMapping[conditionColName];
+    const dstConditionCol = outputColMap[conditionColName];
+
+    if (srcConditionCol && dstConditionCol !== undefined) {
+      try {
+        const srcValidation = sourceSheet
+          .getRange(rowNumber, srcConditionCol)
+          .getDataValidation();
+
+        if (srcValidation) {
+          outputSheet
+            .getRange(newRow, dstConditionCol + 1)
+            .setDataValidation(srcValidation);
+          Logger.log('✅ 状態プルダウンをDBにコピー完了');
+        }
+      } catch (e) {
+        Logger.log('⚠️ 状態プルダウンコピーエラー（転記は継続）: ' + e.toString());
+      }
+    }
 
     return { success: true, dbRow: newRow, sku: listingData.sku };
 
@@ -1634,7 +1864,7 @@ function transferToOutputDb_phase1(spreadsheetId, rowNumber, listingData, output
  * @param {string} itemId eBay Item ID
  * @returns {{ success: boolean, error?: string }}
  */
-function transferToOutputDb_phase2(outputDbId, dbRow, itemId, sku) {
+function transferToOutputDb_phase2(outputDbId, dbRow, itemId, sku, epsImages) {
   try {
     Logger.log('=== 出品DB転記 Phase2開始 ===');
 
@@ -1687,13 +1917,40 @@ function transferToOutputDb_phase2(outputDbId, dbRow, itemId, sku) {
     }
     const statusKey = ('出品ステータス' in outputColMap) ? '出品ステータス' : 'ステータス';
     if (statusKey in outputColMap) {
-      outputSheet.getRange(dbRow, outputColMap[statusKey] + 1).setValue('Active');
+      outputSheet.getRange(dbRow, outputColMap[statusKey] + 1).setValue('出品中');
     }
     if ('出品タイムスタンプ' in outputColMap) {
       outputSheet.getRange(dbRow, outputColMap['出品タイムスタンプ'] + 1).setValue(timestamp);
     }
     if ('管理年月' in outputColMap) {
       outputSheet.getRange(dbRow, outputColMap['管理年月'] + 1).setValue(managementMonth);
+    }
+
+    // EPS URLを画像列に書き戻す
+    if (epsImages && epsImages.length > 0) {
+      const imageColNames = [];
+      for (let i = 1; i <= 23; i++) {
+        imageColNames.push('画像' + i);
+      }
+      imageColNames.push('ストア画像');
+
+      let epsIndex = 0;
+      for (let i = 0; i < imageColNames.length; i++) {
+        if (epsIndex >= epsImages.length) break;
+        const colName = imageColNames[i];
+        if (!(colName in outputColMap)) continue;
+        // 元のDB値が空でなければEPS URLで上書き
+        const currentVal = String(
+          outputSheet.getRange(dbRow, outputColMap[colName] + 1).getValue() || ''
+        ).trim();
+        if (currentVal !== '') {
+          outputSheet.getRange(dbRow, outputColMap[colName] + 1)
+            .setValue(epsImages[epsIndex]);
+          Logger.log('DB EPS URL書き込み: ' + colName + ' → ' + epsImages[epsIndex].substring(0, 50));
+          epsIndex++;
+        }
+      }
+      Logger.log('✅ DB EPS URL書き込み完了: ' + epsIndex + '列');
     }
 
     Logger.log('✅ 出品DB Phase2更新完了: ' + dbRow + '行目 / Item ID: ' + itemId);
@@ -1797,11 +2054,70 @@ function writeBackToListingSheet(spreadsheetId, rowNumber, itemId) {
 
     const statusKey = headerMapping['出品ステータス'] ? '出品ステータス' : 'ステータス';
     const statusCol = headerMapping[statusKey];
-    if (statusCol) listingSheet.getRange(rowNumber, statusCol).setValue('Active');
+    if (statusCol) listingSheet.getRange(rowNumber, statusCol).setValue('出品中');
 
     Logger.log('✅ 出品シート書き戻し完了: ' + rowNumber + '行目 / Item ID: ' + itemId);
   } catch (error) {
     Logger.log('❌ 出品シート書き戻しエラー: ' + error.toString());
+  } finally {
+    CURRENT_SPREADSHEET_ID = null;
+  }
+}
+
+/**
+ * EPSアップロード済みURLを出品シートの画像列に書き戻す
+ * 次回更新時にAPIを再度叩かずに済む
+ *
+ * @param {string} spreadsheetId 出品スプレッドシートID
+ * @param {number} rowNumber 対象行番号
+ * @param {Array} originalImages 元の画像URL配列（extractImageUrls()の出力順）
+ * @param {Array} epsUrls EPS URL配列（uploadAllImagesToEPS()の出力順）
+ * @param {Object} headerMapping ヘッダーマッピング
+ */
+function writeEpsUrlsToSheet(spreadsheetId, rowNumber, originalImages, epsUrls, headerMapping) {
+  try {
+    if (!epsUrls || epsUrls.length === 0) return;
+
+    Logger.log('=== EPS URL書き戻し開始: ' + epsUrls.length + '件 ===');
+
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+    const sheet = getTargetSpreadsheet(spreadsheetId).getSheetByName(SHEET_NAMES.LISTING);
+    if (!sheet) return;
+
+    // extractImageUrls() と同じ順番で列を走査
+    // 画像1〜23 → ストア画像 の順
+    const imageColNames = [];
+    for (let i = 1; i <= 23; i++) {
+      imageColNames.push('画像' + i);
+    }
+    imageColNames.push('ストア画像');
+
+    let epsIndex = 0;
+    let writeCount = 0;
+
+    for (let i = 0; i < imageColNames.length; i++) {
+      const colName = imageColNames[i];
+      const colNum = headerMapping[colName];
+      if (!colNum) continue;
+
+      // 元のURLが存在する列のみ書き戻す
+      const originalUrl = sheet.getRange(rowNumber, colNum).getDisplayValue().trim();
+      if (!originalUrl) continue;
+
+      // 対応するEPS URLがあれば書き戻す
+      if (epsIndex < epsUrls.length && epsUrls[epsIndex]) {
+        sheet.getRange(rowNumber, colNum).setValue(epsUrls[epsIndex]);
+        Logger.log('EPS URL書き戻し: ' + colName + ' → ' + epsUrls[epsIndex].substring(0, 50) + '...');
+        writeCount++;
+      }
+      epsIndex++;
+    }
+
+    Logger.log('✅ EPS URL書き戻し完了: ' + writeCount + '列');
+
+  } catch (e) {
+    Logger.log('⚠️ EPS URL書き戻しエラー（出品は継続）: ' + e.toString());
+    // 書き戻し失敗は致命的ではないため出品処理は継続
   } finally {
     CURRENT_SPREADSHEET_ID = null;
   }
@@ -2085,9 +2401,10 @@ function createListing(spreadsheetId, rowNumber) {
     // Phase1.5: 画像をEPSにアップロード
     const config2 = getEbayConfig();
     const accessToken = config2.userToken;
+    let epsImages = null;
     if (listingData.images && listingData.images.length > 0) {
       Logger.log('=== 画像EPSアップロード開始: ' + listingData.images.length + '枚 ===');
-      const epsImages = uploadAllImagesToEPS(listingData.images, accessToken);
+      epsImages = uploadAllImagesToEPS(listingData.images, accessToken);
       if (epsImages.length === 0) {
         // 全画像のアップロード失敗 → DB行をロールバックして終了
         if (dbRow && outputDbId) deleteDbRow(outputDbId, dbRow, listingData.sku);
@@ -2132,7 +2449,7 @@ function createListing(spreadsheetId, rowNumber) {
 
     // Phase4: DB側に特殊フィールドを更新（Item ID・URL・ステータス等）
     if (dbRow && outputDbId) {
-      const phase2Result = transferToOutputDb_phase2(outputDbId, dbRow, result.itemId, listingData.sku);
+      const phase2Result = transferToOutputDb_phase2(outputDbId, dbRow, result.itemId, listingData.sku, epsImages);
       if (!phase2Result.success) {
         // DB更新失敗 → 出品シートに書き戻してユーザーに通知
         writeBackToListingSheet(spreadsheetId, rowNumber, result.itemId);
@@ -2242,6 +2559,10 @@ function processOnEdit(e, spreadsheetId) {
     sheet.getRange(row, charCountCol).setValue(charCount);
 
     Logger.log('✅ 文字数更新完了: 行' + row + ' = ' + charCount + '文字');
+
+    // ワード判定を実行
+    const titleForCheck = sheet.getRange(row, titleCol).getDisplayValue();
+    checkAndWriteWordJudgement(sheet, row, titleForCheck, buildHeaderMapping(), spreadsheetId);
 
   } catch (error) {
     Logger.log('❌ onEdit処理エラー: ' + error.toString());

@@ -261,15 +261,22 @@ function getConfig() {
     throw new Error(`「${SHEET_NAMES.SETTINGS}」シートが見つかりません`);
   }
 
-  // A列:項目名、B列:値
   const data = settingsSheet.getDataRange().getValues();
+
+  // ヘッダー行から「項目」列・「値」列を動的に特定
+  const headerRow = data[0];
+  const itemColIdx = headerRow.findIndex(function(h) { return String(h || '').trim() === '項目'; });
+  const valueColIdx = headerRow.findIndex(function(h) { return String(h || '').trim() === '値'; });
+  if (itemColIdx === -1 || valueColIdx === -1) {
+    throw new Error('ツール設定シートに「項目」または「値」列が見つかりません。');
+  }
 
   const config = {};
 
   // 1行目から開始（0-indexed）
   for (let i = 0; i < data.length; i++) {
-    const key = data[i][0];   // A列: 項目名
-    const value = data[i][1]; // B列: 値
+    const key = data[i][itemColIdx];   // 「項目」列
+    const value = data[i][valueColIdx]; // 「値」列
 
     // ヘッダー行・セクションヘッダーをスキップ
     if (key === '項目' || key === 'Item' || key === 'Key' ||
@@ -333,6 +340,21 @@ function extractSpreadsheetId(urlOrId) {
 }
 
 /**
+ * Google DriveフォルダURLまたはIDからフォルダIDを抽出
+ * 対応形式:
+ *   https://drive.google.com/drive/folders/FOLDER_ID
+ *   https://drive.google.com/drive/u/0/folders/FOLDER_ID
+ * @param {string} urlOrId
+ * @returns {string} フォルダID
+ */
+function extractDriveFolderId(urlOrId) {
+  if (!urlOrId) return '';
+  if (urlOrId.indexOf('/') === -1) return urlOrId; // すでにID
+  const match = urlOrId.match(/\/folders\/([a-zA-Z0-9-_]+)/);
+  return match ? match[1] : '';
+}
+
+/**
  * eBay設定を取得
  *
  * @returns {Object} eBay設定
@@ -350,6 +372,7 @@ function getEbayConfig() {
     ruName: config['RuName'] || '',
     categoryMasterSpreadsheetId: extractSpreadsheetId(config['カテゴリマスタ']) || '',
     outputDbSpreadsheetId: extractSpreadsheetId(config['出品DB']) || '',
+    csvBackupFolderId:     extractDriveFolderId(config['CSVデータフォルダ']) || '',
     itemLocation: config['出品所在地'] || 'Japan',
     postalCode:   config['郵便番号']   || '',
 
