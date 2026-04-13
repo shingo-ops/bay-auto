@@ -1043,6 +1043,31 @@ function reviseFixedPriceItem(spreadsheetId, rowNumber) {
         const errEl = root.getChild('Errors', ns);
         if (errEl) Logger.log('⚠️ Warning: ' + (errEl.getChild('ShortMessage', ns) || { getText: function() { return ''; } }).getText());
       }
+      // 更新タイムスタンプを同じスプレッドシート（出品DB）の同じ行に書き込む
+      try {
+        const now = new Date();
+        const tsStr = Utilities.formatDate(now, 'Asia/Tokyo', 'yyyy/MM/dd/HH:mm:ss');
+
+        // 現在のスプレッドシート（出品DB）の出品シートを取得
+        const currentSS = getTargetSpreadsheet(spreadsheetId);
+        const currentSheet = currentSS.getSheetByName(SHEET_NAMES.LISTING);
+        if (currentSheet) {
+          const currentHeaders = currentSheet.getRange(1, 1, 1, currentSheet.getLastColumn()).getValues()[0];
+          const currentMap = {};
+          currentHeaders.forEach(function(h, i) { if (h) currentMap[String(h).trim()] = i + 1; });
+
+          const tsCol = currentMap['更新タイムスタンプ'];
+          if (tsCol) {
+            currentSheet.getRange(rowNumber, tsCol).setValue(tsStr);
+            Logger.log('✅ 更新タイムスタンプ書き込み: ' + tsStr + ' / 行' + rowNumber);
+          } else {
+            Logger.log('⚠️ 更新タイムスタンプ列が見つかりません');
+          }
+        }
+      } catch(tsErr) {
+        Logger.log('⚠️ 更新タイムスタンプ書き込みエラー（更新処理は完了）: ' + tsErr.toString());
+      }
+
       return {
         success: true,
         message: '✅ 更新が完了しました\n\nItem ID: ' + itemId + '\n商品名: ' + listingData.title

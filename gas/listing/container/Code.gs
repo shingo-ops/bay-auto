@@ -128,32 +128,35 @@ function menuReviseItem() {
   }
 
   const row = sheet.getActiveRange().getRow();
-  if (row <= 4) {
-    ui.alert('エラー', 'データ行（5行目以降）を選択してください。', ui.ButtonSet.OK);
+  if (row <= 1) {
+    ui.alert('エラー', 'データ行（2行目以降）を選択してください。', ui.ButtonSet.OK);
     return;
   }
 
   const headerMapping = _buildListingHeaderMapping(sheet);
+
+  // Item IDを取得
   const itemIdCol = headerMapping['Item ID'];
   if (!itemIdCol) {
     ui.alert('エラー', '「Item ID」列が見つかりません。', ui.ButtonSet.OK);
     return;
   }
-
   const itemId = String(sheet.getRange(row, itemIdCol).getDisplayValue() || '').trim();
   if (!itemId) {
-    ui.alert('エラー', row + '行目の Item ID が空です。\n先に出品を実行してください。', ui.ButtonSet.OK);
+    ui.alert('エラー', row + '行目のItem IDが空です。', ui.ButtonSet.OK);
     return;
   }
 
+  // タイトルを取得（確認ダイアログ用）
   const titleCol = headerMapping['タイトル'];
-  const title    = titleCol ? String(sheet.getRange(row, titleCol).getValue() || '') : '（タイトル不明）';
+  const title = titleCol
+    ? String(sheet.getRange(row, titleCol).getValue() || '')
+    : '（タイトル不明）';
 
   const response = ui.alert(
     '出品更新確認',
-    'Item ID: ' + itemId + '\n' +
-    '商品名: ' + title + '\n\n' +
-    '現在の値で全フィールドを更新しますか？',
+    'Item ID: ' + itemId + '\n商品名: ' + title + '\n\n' +
+    'この行のデータでeBayの商品情報を更新します。\n実行しますか？',
     ui.ButtonSet.YES_NO
   );
   if (response !== ui.Button.YES) return;
@@ -161,12 +164,12 @@ function menuReviseItem() {
   try {
     const result = EbayLib.reviseFixedPriceItem(spreadsheetId, row);
     if (result.success) {
-      ui.alert('更新完了', result.message, ui.ButtonSet.OK);
+      ui.alert('✅ 更新完了', result.message, ui.ButtonSet.OK);
     } else {
-      ui.alert('エラー', result.message, ui.ButtonSet.OK);
+      ui.alert('❌ エラー', result.message, ui.ButtonSet.OK);
     }
-  } catch (e) {
-    ui.alert('エラー', '❌ 更新エラー:\n' + e.toString(), ui.ButtonSet.OK);
+  } catch(e) {
+    ui.alert('❌ エラー', e.toString(), ui.ButtonSet.OK);
   }
 }
 
