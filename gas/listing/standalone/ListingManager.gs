@@ -1566,12 +1566,15 @@ function transferToOutputDb_phase1(spreadsheetId, rowNumber, listingData, output
       }
     });
 
-    // --- SKU予約：空行を探してSKUだけ先に書き込む ---
-    const skuColInOutput = outputHeaderRow.indexOf('SKU');
-    const urlColInOutput = outputHeaderRow.indexOf('出品URL');
+    // --- SKU予約：書き込み行を特定してSKUだけ先に書き込む ---
+    // SKU・Item ID・出品タイムスタンプ列のインデックスを取得
+    const skuColInOutput    = outputHeaderRow.indexOf('SKU');
+    const itemIdColInOutput = outputHeaderRow.indexOf('Item ID');
+    const tsColInOutput     = outputHeaderRow.indexOf('出品タイムスタンプ');
+
     let newRow = null;
 
-    // 既存行にSKUが一致する行があれば再利用（冪等性確保）
+    // Step1: 既存行に同じSKUがあれば再利用（冪等性確保）
     if (skuColInOutput !== -1 && listingData.sku) {
       const lastRow = outputSheet.getLastRow();
       if (lastRow >= 5) {
@@ -1586,31 +1589,46 @@ function transferToOutputDb_phase1(spreadsheetId, rowNumber, listingData, output
       }
     }
 
-    // SKU一致行がなければ空行を探す（出品URL列が空の行）
+    // Step2: SKU一致行がなければ「完全な空行」を探す
+    // 判定基準：SKU・Item ID・出品タイムスタンプ が全て空
     if (!newRow) {
       const lastRow = outputSheet.getLastRow();
-      if (urlColInOutput !== -1 && lastRow >= 5) {
-        const urlValues = outputSheet.getRange(5, urlColInOutput + 1, lastRow - 4, 1).getValues();
-        for (let i = 0; i < urlValues.length; i++) {
-          if (urlValues[i][0] === '') {
+      if (lastRow >= 5) {
+        const checkRange = outputSheet.getRange(5, 1, lastRow - 4, outputHeaderRow.length);
+        const allValues = checkRange.getValues(); // raw値で取得（日付誤認識なし）
+
+        for (let i = 0; i < allValues.length; i++) {
+          const rowData = allValues[i];
+
+          const skuVal = skuColInOutput    !== -1 ? String(rowData[skuColInOutput]    || '').trim() : '';
+          const idVal  = itemIdColInOutput !== -1 ? String(rowData[itemIdColInOutput]  || '').trim() : '';
+          const tsVal  = tsColInOutput     !== -1 ? String(rowData[tsColInOutput]      || '').trim() : '';
+
+          // 3列すべて空の行のみ再利用可能
+          if (skuVal === '' && idVal === '' && tsVal === '') {
             newRow = i + 5;
-            Logger.log('空行を再利用: ' + newRow + '行目');
+            Logger.log('完全空行を再利用: ' + newRow + '行目');
             break;
           }
         }
       }
-      // 空行もなければ最終行の次
-      if (!newRow) newRow = Math.max(outputSheet.getLastRow() + 1, 5);
+      // 空行が見つからなければ最終行の次
+      if (!newRow) {
+        newRow = Math.max(outputSheet.getLastRow() + 1, 5);
+        Logger.log('新規行に追加: ' + newRow + '行目');
+      }
     }
 
-    // SKUだけ先に予約書き込み（他のデータは後でsetValuesで上書き）
+    // SKUを先行予約書き込み
     if (skuColInOutput !== -1 && listingData.sku) {
       outputSheet.getRange(newRow, skuColInOutput + 1).setValue(listingData.sku);
       Logger.log('SKU予約完了: ' + newRow + '行目 / SKU: ' + listingData.sku);
     }
 
-    // outputRowにSKUをセット（setValuesで上書きされても同じ値）
-    outputRow[skuColInOutput] = listingData.sku;
+    // outputRowにSKUをセット
+    if (skuColInOutput !== -1) {
+      outputRow[skuColInOutput] = listingData.sku;
+    }
 
     // 書き込み実行
     outputSheet.getRange(newRow, 1, 1, outputRow.length).setValues([outputRow]);
