@@ -1089,6 +1089,70 @@ function reviseFixedPriceItem(spreadsheetId, rowNumber) {
 }
 
 /**
+ * eBayの数量を0に更新する（在庫切れ処理）
+ */
+function reviseQuantityToZero(spreadsheetId, rowNumber, itemId) {
+  try {
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+
+    autoRefreshTokenIfNeeded(spreadsheetId);
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+
+    const config = getEbayConfig();
+    const token = config.userToken;
+    const apiUrl = 'https://api.ebay.com/ws/api.dll';
+
+    const xmlRequest = '<?xml version="1.0" encoding="utf-8"?>' +
+      '<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">' +
+      '<RequesterCredentials>' +
+      '<eBayAuthToken>' + token + '</eBayAuthToken>' +
+      '</RequesterCredentials>' +
+      '<Item>' +
+      '<ItemID>' + itemId + '</ItemID>' +
+      '<Quantity>0</Quantity>' +
+      '</Item>' +
+      '</ReviseFixedPriceItemRequest>';
+
+    const options = {
+      method: 'POST',
+      headers: {
+        'X-EBAY-API-CALL-NAME': 'ReviseFixedPriceItem',
+        'X-EBAY-API-SITEID': '0',
+        'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+        'X-EBAY-API-APP-NAME': config.appId,
+        'X-EBAY-API-DEV-NAME': config.devId,
+        'X-EBAY-API-CERT-NAME': config.certId,
+        'Content-Type': 'text/xml'
+      },
+      payload: xmlRequest,
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch(apiUrl, options);
+    const ns = XmlService.getNamespace('urn:ebay:apis:eBLBaseComponents');
+    const root = XmlService.parse(response.getContentText()).getRootElement();
+    const ack = root.getChildText('Ack', ns);
+
+    if (ack === 'Success' || ack === 'Warning') {
+      Logger.log('✅ 数量0更新成功: Item ID=' + itemId);
+      return { success: true, message: '✅ 数量を0にしました。' };
+    }
+
+    const errEl = root.getChild('Errors', ns);
+    const errMsg = errEl
+      ? (errEl.getChildText('ShortMessage', ns) || '不明なエラー')
+      : '不明なエラー';
+    return { success: false, message: errMsg };
+
+  } catch(e) {
+    Logger.log('❌ reviseQuantityToZero エラー: ' + e.toString());
+    return { success: false, message: e.toString() };
+  } finally {
+    CURRENT_SPREADSHEET_ID = null;
+  }
+}
+
+/**
  * 出品DBのスプレッドシートIDを返す
  *
  * @param {string} spreadsheetId 出品元スプレッドシートID
@@ -1547,8 +1611,8 @@ function transferToOutputDb(spreadsheetId, rowNumber, listingData, result) {
     // 出品ステータス（列名ゆれに対応）
     const statusKey = ('出品ステータス' in outputColMap) ? '出品ステータス' : 'ステータス';
     if (statusKey in outputColMap) {
-      outputRow[outputColMap[statusKey]] = 'Active';
-      Logger.log('ステータスを設定: Active');
+      outputRow[outputColMap[statusKey]] = '出品中';
+      Logger.log('ステータスを設定: 出品中');
     } else {
       Logger.log('⚠️ 出品DBに "出品ステータス"/"ステータス" 列が見つかりません');
     }
@@ -1853,7 +1917,7 @@ function transferToOutputDb_phase2(outputDbId, dbRow, itemId, sku, epsImages) {
     }
     const statusKey = ('出品ステータス' in outputColMap) ? '出品ステータス' : 'ステータス';
     if (statusKey in outputColMap) {
-      outputSheet.getRange(dbRow, outputColMap[statusKey] + 1).setValue('Active');
+      outputSheet.getRange(dbRow, outputColMap[statusKey] + 1).setValue('出品中');
     }
     if ('出品タイムスタンプ' in outputColMap) {
       outputSheet.getRange(dbRow, outputColMap['出品タイムスタンプ'] + 1).setValue(timestamp);
@@ -1990,7 +2054,7 @@ function writeBackToListingSheet(spreadsheetId, rowNumber, itemId) {
 
     const statusKey = headerMapping['出品ステータス'] ? '出品ステータス' : 'ステータス';
     const statusCol = headerMapping[statusKey];
-    if (statusCol) listingSheet.getRange(rowNumber, statusCol).setValue('Active');
+    if (statusCol) listingSheet.getRange(rowNumber, statusCol).setValue('出品中');
 
     Logger.log('✅ 出品シート書き戻し完了: ' + rowNumber + '行目 / Item ID: ' + itemId);
   } catch (error) {

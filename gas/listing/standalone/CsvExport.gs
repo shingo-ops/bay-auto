@@ -96,14 +96,14 @@ function exportSellstaCsv(spreadsheetId) {
       const status = String(row[statusIdx] || '').trim();
       const url    = String(row[urlIdx]    || '').trim();
       const csv    = String(row[csvIdx]    || '').trim();
-      if (status === 'Active' && url !== '' && csv === '') {
+      if (status === '出品中' && url !== '' && csv === '') {
         targetRows.push({ rowIndex: i + 5, disp: dataDisplay[i] });
       }
     });
 
     Logger.log('対象行数: ' + targetRows.length + '件');
     if (targetRows.length === 0) {
-      return { success: false, message: '出力対象のデータがありません。\n条件: 出品ステータス=Active、出品URLあり、CSV列が空' };
+      return { success: false, message: '出力対象のデータがありません。\n条件: 出品ステータス=出品中、出品URLあり、CSV列が空' };
     }
 
     // セルスタ_CSVシートの既存データの最終行を取得（追記位置）

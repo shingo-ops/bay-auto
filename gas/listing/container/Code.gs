@@ -347,8 +347,10 @@ function handleEdit(e) {
     const statusCol = headerMapping['出品ステータス'] || headerMapping['ステータス'];
     if (statusCol && col === statusCol) {
       const newStatus = String(e.value !== undefined ? e.value : range.getValue()).trim();
-      if (newStatus === 'End') {
+      if (newStatus === '出品終了') {
         _handleEndListing(e, sheet, headerMapping, row, spreadsheetId);
+      } else if (newStatus === '在庫切れ') {
+        _handleOutOfStock(e, sheet, headerMapping, row, spreadsheetId);
       }
       return;
     }
@@ -429,7 +431,7 @@ function _handleEndListing(e, sheet, headerMapping, row, spreadsheetId) {
   const itemId = String(sheet.getRange(row, itemIdCol).getValue() || '').trim();
   if (!itemId) {
     Logger.log('⚠️ Item IDが空のためスキップ: row=' + row);
-    sheet.getRange(row, statusCol).setValue(e.oldValue || 'Active');
+    sheet.getRange(row, statusCol).setValue(e.oldValue || '出品中');
     return;
   }
 
@@ -447,14 +449,14 @@ function _handleEndListing(e, sheet, headerMapping, row, spreadsheetId) {
   const statusCell = sheet.getRange(row, statusCol);
 
   if (response !== ui.Button.YES) {
-    statusCell.setValue(e.oldValue || 'Active');
+    statusCell.setValue(e.oldValue || '出品中');
     return;
   }
 
   const result = EbayLib.endFixedPriceItem(spreadsheetId, itemId);
 
   if (result.success) {
-    statusCell.setValue('End');
+    statusCell.setValue('出品終了');
     const endDateCol = headerMapping['取り下げ日時'];
     if (endDateCol) {
       sheet.getRange(row, endDateCol).setValue(
@@ -463,9 +465,65 @@ function _handleEndListing(e, sheet, headerMapping, row, spreadsheetId) {
     }
     Logger.log('✅ 取り下げ完了: Item ID=' + itemId + ' row=' + row);
   } else {
-    statusCell.setValue('Active');
+    statusCell.setValue(e.oldValue || '出品中');
     ui.alert('エラー', '❌ 取り下げに失敗しました:\n' + result.message, ui.ButtonSet.OK);
     Logger.log('❌ 取り下げ失敗: ' + result.message);
+  }
+}
+
+function _handleOutOfStock(e, sheet, headerMapping, row, spreadsheetId) {
+  const ui = SpreadsheetApp.getUi();
+  const statusCol = headerMapping['出品ステータス'] || headerMapping['ステータス'];
+  const itemIdCol = headerMapping['Item ID'];
+
+  if (!itemIdCol) {
+    Logger.log('⚠️ Item ID列が見つかりません');
+    return;
+  }
+
+  const itemId = String(sheet.getRange(row, itemIdCol).getValue() || '').trim();
+  if (!itemId) {
+    if (statusCol) sheet.getRange(row, statusCol).setValue(e.oldValue || '出品中');
+    return;
+  }
+
+  const titleCol = headerMapping['タイトル'];
+  const title = titleCol
+    ? String(sheet.getRange(row, titleCol).getValue() || '')
+    : '（タイトル不明）';
+
+  const response = ui.alert(
+    '在庫切れ確認',
+    'Item ID: ' + itemId + '\n商品名: ' + title + '\n\n' +
+    'eBayの数量を0にして在庫切れにします。\n実行しますか？',
+    ui.ButtonSet.YES_NO
+  );
+
+  const statusCell = sheet.getRange(row, statusCol);
+
+  if (response !== ui.Button.YES) {
+    statusCell.setValue(e.oldValue || '出品中');
+    return;
+  }
+
+  try {
+    const result = EbayLib.reviseQuantityToZero(spreadsheetId, row, itemId);
+
+    if (result.success) {
+      statusCell.setValue('在庫切れ');
+      const quantityCol = headerMapping['個数'];
+      if (quantityCol) {
+        sheet.getRange(row, quantityCol).setValue(0);
+      }
+      ui.alert('完了', '✅ eBayの数量を0にしました。\nItem ID: ' + itemId, ui.ButtonSet.OK);
+      Logger.log('✅ 在庫切れ処理完了: Item ID=' + itemId);
+    } else {
+      statusCell.setValue(e.oldValue || '出品中');
+      ui.alert('エラー', '❌ 在庫切れ処理に失敗しました:\n' + result.message, ui.ButtonSet.OK);
+    }
+  } catch(e2) {
+    statusCell.setValue(e.oldValue || '出品中');
+    ui.alert('エラー', '❌ エラー:\n' + e2.toString(), ui.ButtonSet.OK);
   }
 }
 
