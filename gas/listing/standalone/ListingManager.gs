@@ -721,60 +721,160 @@ function _getPostalCode(config) {
 }
 
 /**
- * 出品者情報（PostalCode・Location）を PropertiesService に保存
- * ツール設定シートから読み込み、フォーマット検証後に保存する
- * authorizeScript から呼び出す
+ * 出品者情報をeBay APIから取得してツール設定シートに書き込む
+ * 取得対象: 出品所在地・郵便番号・eBayユーザーID・ストアプラン
  *
  * @param {string} spreadsheetId
- * @returns {{ success: boolean, postalCode: string, location: string, message: string }}
+ * @returns {{ success: boolean, message: string }}
  */
 function setupSellerInfo(spreadsheetId) {
   try {
     if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
 
-    const config     = getEbayConfig();
-    const postalCode = String(config.postalCode || '').trim();
-    const location   = String(config.itemLocation || 'Japan').trim();
+    autoRefreshTokenIfNeeded(spreadsheetId);
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
 
-    if (postalCode === '') {
+    const config = getEbayConfig();
+    const token  = config.userToken;
+    const apiUrl = 'https://api.ebay.com/ws/api.dll';
+
+    // GetUser APIで出品者情報を取得
+    const xmlRequest =
+      '<?xml version="1.0" encoding="utf-8"?>' +
+      '<GetUserRequest xmlns="urn:ebay:apis:eBLBaseComponents">' +
+      '<RequesterCredentials>' +
+      '<eBayAuthToken>' + token + '</eBayAuthToken>' +
+      '</RequesterCredentials>' +
+      '<DetailLevel>ReturnAll</DetailLevel>' +
+      '</GetUserRequest>';
+
+    const response = UrlFetchApp.fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'X-EBAY-API-CALL-NAME':          'GetUser',
+        'X-EBAY-API-SITEID':             '0',
+        'X-EBAY-API-COMPATIBILITY-LEVEL':'967',
+        'X-EBAY-API-APP-NAME':           config.appId,
+        'X-EBAY-API-DEV-NAME':           config.devId,
+        'X-EBAY-API-CERT-NAME':          config.certId,
+        'Content-Type':                  'text/xml'
+      },
+      payload: xmlRequest,
+      muteHttpExceptions: true
+    });
+
+    const ns   = XmlService.getNamespace('urn:ebay:apis:eBLBaseComponents');
+    const root = XmlService.parse(response.getContentText()).getRootElement();
+    const ack  = root.getChildText('Ack', ns);
+
+    if (ack !== 'Success' && ack !== 'Warning') {
+      const errEl  = root.getChild('Errors', ns);
+      const errMsg = errEl ? errEl.getChildText('ShortMessage', ns) : '不明なエラー';
+      return { success: false, message: 'eBay APIエラー: ' + errMsg };
+    }
+
+    // ユーザー情報を取得
+    const userEl                = root.getChild('User', ns);
+    const userId                = userEl ? userEl.getChildText('UserID', ns) || '' : '';
+    const registrationAddressEl = userEl ? userEl.getChild('RegistrationAddress', ns) : null;
+    const city                  = registrationAddressEl ? registrationAddressEl.getChildText('CityName', ns)       || '' : '';
+    const stateOrProvince       = registrationAddressEl ? registrationAddressEl.getChildText('StateOrProvince', ns) || '' : '';
+    const postalCode            = registrationAddressEl ? registrationAddressEl.getChildText('PostalCode', ns)      || '' : '';
+
+    // 出品所在地を組み立て（City + State/Province）
+    const itemLocation = [city, stateOrProvince].filter(Boolean).join(' ');
+
+    // ストアプランを取得（GetStoreで確認）
+    let storePlan = '（なし）';
+    try {
+      const storeXml =
+        '<?xml version="1.0" encoding="utf-8"?>' +
+        '<GetStoreRequest xmlns="urn:ebay:apis:eBLBaseComponents">' +
+        '<RequesterCredentials>' +
+        '<eBayAuthToken>' + token + '</eBayAuthToken>' +
+        '</RequesterCredentials>' +
+        '</GetStoreRequest>';
+
+      const storeResponse = UrlFetchApp.fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'X-EBAY-API-CALL-NAME':          'GetStore',
+          'X-EBAY-API-SITEID':             '0',
+          'X-EBAY-API-COMPATIBILITY-LEVEL':'967',
+          'X-EBAY-API-APP-NAME':           config.appId,
+          'X-EBAY-API-DEV-NAME':           config.devId,
+          'X-EBAY-API-CERT-NAME':          config.certId,
+          'Content-Type':                  'text/xml'
+        },
+        payload: storeXml,
+        muteHttpExceptions: true
+      });
+
+      const storeRoot = XmlService.parse(storeResponse.getContentText()).getRootElement();
+      const storeAck  = storeRoot.getChildText('Ack', ns);
+      if (storeAck === 'Success' || storeAck === 'Warning') {
+        const storeEl        = storeRoot.getChild('Store', ns);
+        const subscriptionEl = storeEl ? storeEl.getChild('Subscription', ns) : null;
+        const level          = subscriptionEl ? subscriptionEl.getChildText('Level', ns) || '' : '';
+        if (level) storePlan = level;
+      }
+    } catch(storeErr) {
+      Logger.log('GetStore エラー（続行）: ' + storeErr.toString());
+    }
+
+    Logger.log('取得結果: ユーザーID=' + userId + ' 所在地=' + itemLocation +
+               ' 郵便番号=' + postalCode + ' ストアプラン=' + storePlan);
+
+    // ツール設定シートに書き込む
+    const ss            = getTargetSpreadsheet(spreadsheetId);
+    const settingsSheet = ss.getSheetByName('ツール設定');
+    if (!settingsSheet) {
+      return { success: false, message: 'ツール設定シートが見つかりません。' };
+    }
+
+    const data     = settingsSheet.getDataRange().getValues();
+    const headers  = data[0];
+    const itemIdx  = headers.findIndex(function(h) { return String(h || '').trim() === '項目'; });
+    const valueIdx = headers.findIndex(function(h) { return String(h || '').trim() === '値'; });
+
+    if (itemIdx === -1 || valueIdx === -1) {
+      return { success: false, message: 'ツール設定シートに「項目」「値」列が見つかりません。' };
+    }
+
+    // 書き込みマップ（項目名 → 値）
+    const writeMap = {};
+    if (itemLocation) writeMap['出品所在地']    = itemLocation;
+    if (postalCode)   writeMap['郵便番号']       = postalCode.replace(/-/g, '');
+    if (userId)       writeMap['eBayユーザーID'] = userId;
+    if (storePlan)    writeMap['ストアプラン']   = storePlan;
+
+    const updatedKeys = [];
+    for (let i = 1; i < data.length; i++) {
+      const key = String(data[i][itemIdx] || '').trim();
+      if (writeMap.hasOwnProperty(key)) {
+        settingsSheet.getRange(i + 1, valueIdx + 1).setValue(writeMap[key]);
+        updatedKeys.push(key + ': ' + writeMap[key]);
+        Logger.log('✅ 書き込み: ' + key + ' = ' + writeMap[key]);
+      }
+    }
+
+    if (updatedKeys.length === 0) {
       return {
         success: false,
-        postalCode: '',
-        location: location,
-        message: '⚠️ ツール設定シートの「郵便番号」が未入力です。⚙️ → アカウント情報取得 を先に実行してください。'
+        message: 'ツール設定シートに以下の項目が見つかりません:\n' +
+                 Object.keys(writeMap).join('\n') +
+                 '\n\nツール設定シートに項目を追加してください。'
       };
     }
 
-    // ハイフンなし7桁（例: 4442141）→ 自動フォーマット（444-2141）
-    const digitsOnly     = postalCode.replace(/-/g, '');
-    const normalizedCode = digitsOnly.length === 7
-      ? digitsOnly.slice(0, 3) + '-' + digitsOnly.slice(3)
-      : postalCode;
-
-    // 日本の郵便番号フォーマット検証（XXX-XXXX）
-    if (!/^\d{3}-\d{4}$/.test(normalizedCode)) {
-      return {
-        success: false,
-        postalCode: postalCode,
-        location: location,
-        message: '⚠️ 郵便番号のフォーマットが不正です（' + postalCode + '）。XXX-XXXX 形式（7桁）で入力してください。'
-      };
-    }
-
-    const props = PropertiesService.getScriptProperties();
-    props.setProperty('POSTAL_CODE',   normalizedCode);
-    props.setProperty('ITEM_LOCATION', location);
-
-    Logger.log('✅ setupSellerInfo: PostalCode=' + normalizedCode + ' Location=' + location);
     return {
       success: true,
-      postalCode: normalizedCode,
-      location: location,
-      message: '✅ 出品者情報を保存しました\n郵便番号: ' + normalizedCode + '\n出品所在地: ' + location
+      message: '✅ 出品者情報を更新しました。\n\n' + updatedKeys.join('\n')
     };
-  } catch (e) {
+
+  } catch(e) {
     Logger.log('❌ setupSellerInfo エラー: ' + e.toString());
-    return { success: false, postalCode: '', location: '', message: '❌ ' + e.toString() };
+    return { success: false, message: 'エラー: ' + e.toString() };
   } finally {
     CURRENT_SPREADSHEET_ID = null;
   }
