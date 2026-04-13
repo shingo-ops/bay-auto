@@ -198,13 +198,36 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
     volumetricWeight: researchSheet.getRange(RESEARCH_MAIN_INFO.DATA_ROW, RESEARCH_MAIN_INFO.COLUMNS.VOLUMETRIC_WEIGHT_G.col).getValue()
   };
 
+  // 10行目（ヘッダー行）からマッピングを構築
+  const priceInfoHeaderRow = researchSheet.getRange(
+    RESEARCH_PRICE_INFO.HEADER_ROW, 1, 1, researchSheet.getLastColumn()
+  ).getValues()[0];
+
+  const priceInfoMap = {};
+  priceInfoHeaderRow.forEach(function(h, i) {
+    const header = String(h || '').trim();
+    if (header) priceInfoMap[header] = i + 1; // 1-based
+  });
+  Logger.log('priceInfoMap: ' + JSON.stringify(priceInfoMap));
+
+  // ヘッダー名で列を動的取得
+  function getPriceInfoValue(headerName) {
+    const col = priceInfoMap[headerName];
+    if (!col) {
+      Logger.log('⚠️ priceInfo列が見つかりません: ' + headerName);
+      return '';
+    }
+    return researchSheet.getRange(RESEARCH_PRICE_INFO.DATA_ROW, col).getValue() || '';
+  }
+
   const priceInfo = {
-    purchaseKeyword: researchSheet.getRange(RESEARCH_PRICE_INFO.DATA_ROW, RESEARCH_PRICE_INFO.COLUMNS.PURCHASE_KEYWORD.col).getValue(),
-    purchaseUrl1: researchSheet.getRange(RESEARCH_PRICE_INFO.DATA_ROW, RESEARCH_PRICE_INFO.COLUMNS.PURCHASE_URL_1.col).getValue(),
-    purchaseUrl2: researchSheet.getRange(RESEARCH_PRICE_INFO.DATA_ROW, RESEARCH_PRICE_INFO.COLUMNS.PURCHASE_URL_2.col).getValue(),
-    purchaseUrl3: researchSheet.getRange(RESEARCH_PRICE_INFO.DATA_ROW, RESEARCH_PRICE_INFO.COLUMNS.PURCHASE_URL_3.col).getValue(),
-    memo: researchSheet.getRange(RESEARCH_PRICE_INFO.DATA_ROW, RESEARCH_PRICE_INFO.COLUMNS.MEMO.col).getValue(),
-    imageUrl: researchSheet.getRange(RESEARCH_PRICE_INFO.DATA_ROW, RESEARCH_PRICE_INFO.COLUMNS.IMAGE_URL.col).getValue()
+    purchaseKeyword: getPriceInfoValue(RESEARCH_PRICE_INFO_HEADERS.PURCHASE_KEYWORD),
+    purchaseUrl1:    getPriceInfoValue(RESEARCH_PRICE_INFO_HEADERS.PURCHASE_URL1),
+    purchaseUrl2:    getPriceInfoValue(RESEARCH_PRICE_INFO_HEADERS.PURCHASE_URL2),
+    purchaseUrl3:    getPriceInfoValue(RESEARCH_PRICE_INFO_HEADERS.PURCHASE_URL3),
+    imageUrl:        getPriceInfoValue(RESEARCH_PRICE_INFO_HEADERS.IMAGE_URL),
+    conditionDesc:   getPriceInfoValue(RESEARCH_PRICE_INFO_HEADERS.CONDITION_DESC),
+    memo:            getPriceInfoValue(RESEARCH_PRICE_INFO_HEADERS.MEMO)
   };
 
   const itemList = {
@@ -353,9 +376,9 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
   // 状態
   setValueByHeader(LISTING_COLUMNS.CONDITION.header, itemList.condition);
 
-  // 状態説明（空）
+  // 状態説明（リサーチシートの「状態説明欄」列から取得・なければ空）
   setValueByHeader(LISTING_COLUMNS.CONDITION_DESC_TEMPLATE.header, '');
-  setValueByHeader(LISTING_COLUMNS.CONDITION_DESC_2.header, '');
+  setValueByHeader(LISTING_COLUMNS.CONDITION_DESC_2.header, priceInfo.conditionDesc || '');
   setValueByHeader(LISTING_COLUMNS.DESCRIPTION.header, '');
 
   // ItemURL
@@ -473,6 +496,36 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
 
   // 管理年月（空）
   setValueByHeader(LISTING_COLUMNS.MGMT_YEAR_MONTH.header, '');
+
+  // ポリシー管理シートからデフォルトポリシーを取得して補完
+  const defaultPolicies = getDefaultPolicies(listingSheet.getParent());
+
+  const shippingPolicyKey = 'Shipping Policy';
+  if (headerMapping[shippingPolicyKey] &&
+      (!transferData[headerMapping[shippingPolicyKey] - 1] ||
+       String(transferData[headerMapping[shippingPolicyKey] - 1]).trim() === '') &&
+      defaultPolicies.shipping) {
+    transferData[headerMapping[shippingPolicyKey] - 1] = defaultPolicies.shipping;
+    Logger.log('デフォルトShipping Policy補完: ' + defaultPolicies.shipping);
+  }
+
+  const returnPolicyKey = 'Return Policy';
+  if (headerMapping[returnPolicyKey] &&
+      (!transferData[headerMapping[returnPolicyKey] - 1] ||
+       String(transferData[headerMapping[returnPolicyKey] - 1]).trim() === '') &&
+      defaultPolicies.return) {
+    transferData[headerMapping[returnPolicyKey] - 1] = defaultPolicies.return;
+    Logger.log('デフォルトReturn Policy補完: ' + defaultPolicies.return);
+  }
+
+  const paymentPolicyKey = 'Payment Policy';
+  if (headerMapping[paymentPolicyKey] &&
+      (!transferData[headerMapping[paymentPolicyKey] - 1] ||
+       String(transferData[headerMapping[paymentPolicyKey] - 1]).trim() === '') &&
+      defaultPolicies.payment) {
+    transferData[headerMapping[paymentPolicyKey] - 1] = defaultPolicies.payment;
+    Logger.log('デフォルトPayment Policy補完: ' + defaultPolicies.payment);
+  }
 
   return {
     data: transferData,
@@ -869,5 +922,109 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
 
     SpreadsheetApp.getUi().alert('転記エラー:\n\n' + error.toString());
   }
+}
+
+/**
+ * 出品シートのポリシー管理シートからデフォルトポリシーを取得
+ * @param {Spreadsheet} ss リサーチスプレッドシート（ツール設定シートを持つ）
+ * @returns {{ shipping: string, return: string, payment: string }}
+ */
+function getDefaultPolicies(ss) {
+  const defaults = { shipping: '', return: '', payment: '' };
+  try {
+    // ツール設定シートから出品シートURLを取得
+    const toolSheet = ss.getSheetByName('ツール設定');
+    if (!toolSheet) {
+      Logger.log('⚠️ ツール設定シートが見つかりません');
+      return defaults;
+    }
+
+    const toolData   = toolSheet.getDataRange().getValues();
+    const toolHeaders = toolData[0];
+    const itemIdx  = toolHeaders.findIndex(function(h) { return String(h || '').trim() === '項目'; });
+    const valueIdx = toolHeaders.findIndex(function(h) { return String(h || '').trim() === '値'; });
+
+    if (itemIdx === -1 || valueIdx === -1) {
+      Logger.log('⚠️ ツール設定シートに項目/値列が見つかりません');
+      return defaults;
+    }
+
+    let listingSheetUrl = '';
+    for (let i = 1; i < toolData.length; i++) {
+      const key = String(toolData[i][itemIdx] || '').trim();
+      if (key === '出品シート') {
+        listingSheetUrl = String(toolData[i][valueIdx] || '').trim();
+        break;
+      }
+    }
+
+    if (!listingSheetUrl) {
+      Logger.log('⚠️ ツール設定シートに出品シートURLが設定されていません');
+      return defaults;
+    }
+
+    const match = listingSheetUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    if (!match || !match[1]) {
+      Logger.log('⚠️ 出品シートURLからIDを抽出できません');
+      return defaults;
+    }
+
+    const listingSS   = SpreadsheetApp.openById(match[1]);
+    const policySheet = listingSS.getSheetByName('ポリシー管理');
+    if (!policySheet) {
+      Logger.log('⚠️ 出品シートにポリシー管理シートが見つかりません');
+      return defaults;
+    }
+
+    const lastRow = policySheet.getLastRow();
+    const lastCol = policySheet.getLastColumn();
+    if (lastRow < 2) return defaults;
+
+    const headers    = policySheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    // 日本語・英語両方のヘッダー名に対応
+    const typeIdx = headers.findIndex(function(h) {
+      const v = String(h || '').trim();
+      return v === 'POLICY_TYPE' || v === 'ポリシータイプ';
+    });
+    const nameIdx = headers.findIndex(function(h) {
+      const v = String(h || '').trim();
+      return v === 'POLICY_NAME' || v === 'ポリシー名';
+    });
+    const defaultIdx = headers.findIndex(function(h) {
+      const v = String(h || '').trim();
+      return v === 'デフォルト';
+    });
+
+    if (typeIdx === -1 || nameIdx === -1 || defaultIdx === -1) {
+      Logger.log('⚠️ ポリシー管理シートに必要な列が見つかりません' +
+        '（typeIdx=' + typeIdx + ' nameIdx=' + nameIdx + ' defaultIdx=' + defaultIdx + '）');
+      return defaults;
+    }
+
+    const data = policySheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    data.forEach(function(row) {
+      const type      = String(row[typeIdx]    || '').trim().toLowerCase();
+      const name      = String(row[nameIdx]    || '').trim();
+      const isDefault = String(row[defaultIdx] || '').trim() === 'デフォルト';
+
+      if (!isDefault || !name) return;
+
+      if (type.indexOf('fulfillment') !== -1 || type.indexOf('shipping') !== -1) {
+        if (!defaults.shipping) defaults.shipping = name;
+      } else if (type.indexOf('return') !== -1) {
+        if (!defaults.return) defaults.return = name;
+      } else if (type.indexOf('payment') !== -1) {
+        if (!defaults.payment) defaults.payment = name;
+      }
+    });
+
+    Logger.log('デフォルトポリシー: Shipping=' + defaults.shipping +
+               ' Return=' + defaults.return +
+               ' Payment=' + defaults.payment);
+
+  } catch(e) {
+    Logger.log('getDefaultPolicies エラー: ' + e.toString());
+  }
+  return defaults;
 }
 

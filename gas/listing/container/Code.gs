@@ -69,10 +69,36 @@ function menuCreateListing() {
   const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
   const ui = SpreadsheetApp.getUi();
 
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getActiveSheet();
+
+  // 出品シート以外は拒否
   if (sheet.getName() !== '出品') {
     ui.alert('エラー', '出品シートを選択してください。', ui.ButtonSet.OK);
     return;
+  }
+
+  // 出品DBからの誤操作を防止
+  // ツール設定の「出品シート」URLと現在のSSを比較
+  try {
+    const ebayConfig = EbayLib.getEbayConfig(spreadsheetId);
+    const listingSheetUrl = String(ebayConfig.listingSheetUrl || '').trim();
+    if (listingSheetUrl) {
+      const listingSheetIdMatch = listingSheetUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+      if (listingSheetIdMatch && listingSheetIdMatch[1]) {
+        const currentSsId = ss.getId();
+        if (listingSheetIdMatch[1] !== currentSsId) {
+          ui.alert(
+            '❌ 出品不可',
+            'このスプレッドシートからは出品できません。\n出品シートから操作してください。',
+            ui.ButtonSet.OK
+          );
+          return;
+        }
+      }
+    }
+  } catch(configErr) {
+    Logger.log('出品DBチェックエラー（続行）: ' + configErr.toString());
   }
 
   const row = sheet.getActiveRange().getRow();
@@ -81,12 +107,59 @@ function menuCreateListing() {
     return;
   }
 
-  // VEROチェック（出品前）
-  const wordCheck = EbayLib.getWordCheckValue(spreadsheetId, row);
-  if (wordCheck === 'VERO') {
+  // 出品前に強制ワード判定を実行（シートの値に依存せず毎回チェック）
+  const headerMapping = _buildListingHeaderMapping(sheet);
+  const titleCol = headerMapping['タイトル'];
+  const titleForCheck = titleCol
+    ? String(sheet.getRange(row, titleCol).getValue() || '').trim()
+    : '';
+
+  // ワード判定を強制実行して結果を取得
+  let wordCheck = '';
+  try {
+    if (titleForCheck) {
+      wordCheck = EbayLib.forceCheckWordJudgement(spreadsheetId, row, titleForCheck);
+    }
+  } catch(wcErr) {
+    Logger.log('forceCheckWordJudgement エラー（フォールバック）: ' + wcErr.toString());
+  }
+  // フォールバック: シートの既存値を使用
+  if (!wordCheck) {
+    try {
+      wordCheck = String(EbayLib.getWordCheckValue(spreadsheetId, row) || '');
+    } catch(e2) {
+      Logger.log('getWordCheckValue エラー: ' + e2.toString());
+    }
+  }
+  Logger.log('ワード判定結果: ' + wordCheck);
+
+  // 禁止ワードは完全ブロック
+  if (wordCheck && String(wordCheck).indexOf('禁止:') === 0) {
+    ui.alert(
+      '🚫 出品禁止',
+      '禁止ワードが含まれているため出品できません。\n\n' +
+      '判定結果: ' + wordCheck + '\n\n' +
+      'タイトルを修正してから再度出品してください。',
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
+  // 文字数オーバーは警告のみ
+  if (wordCheck === '文字数オーバー') {
+    const overResponse = ui.alert(
+      '⚠️ 文字数オーバー警告',
+      'タイトルが80文字を超えています。\n出品を続行しますか？',
+      ui.ButtonSet.OK_CANCEL
+    );
+    if (overResponse !== ui.Button.OK) return;
+  }
+
+  // VEROは警告のみ
+  if (wordCheck && String(wordCheck).indexOf('VERO:') === 0) {
     const veroResponse = ui.alert(
       '⚠️ VERO警告',
-      'このアイテムにVEROワードが含まれています。\neBayから削除申請が来る可能性があります。\n\n出品を続行しますか？',
+      'VEROワードが含まれています。\n判定結果: ' + wordCheck + '\n\n出品を続行しますか？',
       ui.ButtonSet.OK_CANCEL
     );
     if (veroResponse !== ui.Button.OK) return;
