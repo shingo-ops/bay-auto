@@ -474,6 +474,36 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
   // 管理年月（空）
   setValueByHeader(LISTING_COLUMNS.MGMT_YEAR_MONTH.header, '');
 
+  // ポリシー管理シートからデフォルトポリシーを取得して補完
+  const defaultPolicies = getDefaultPolicies(listingSheet.getParent());
+
+  const shippingPolicyKey = 'Shipping Policy';
+  if (headerMapping[shippingPolicyKey] &&
+      (!transferData[headerMapping[shippingPolicyKey] - 1] ||
+       String(transferData[headerMapping[shippingPolicyKey] - 1]).trim() === '') &&
+      defaultPolicies.shipping) {
+    transferData[headerMapping[shippingPolicyKey] - 1] = defaultPolicies.shipping;
+    Logger.log('デフォルトShipping Policy補完: ' + defaultPolicies.shipping);
+  }
+
+  const returnPolicyKey = 'Return Policy';
+  if (headerMapping[returnPolicyKey] &&
+      (!transferData[headerMapping[returnPolicyKey] - 1] ||
+       String(transferData[headerMapping[returnPolicyKey] - 1]).trim() === '') &&
+      defaultPolicies.return) {
+    transferData[headerMapping[returnPolicyKey] - 1] = defaultPolicies.return;
+    Logger.log('デフォルトReturn Policy補完: ' + defaultPolicies.return);
+  }
+
+  const paymentPolicyKey = 'Payment Policy';
+  if (headerMapping[paymentPolicyKey] &&
+      (!transferData[headerMapping[paymentPolicyKey] - 1] ||
+       String(transferData[headerMapping[paymentPolicyKey] - 1]).trim() === '') &&
+      defaultPolicies.payment) {
+    transferData[headerMapping[paymentPolicyKey] - 1] = defaultPolicies.payment;
+    Logger.log('デフォルトPayment Policy補完: ' + defaultPolicies.payment);
+  }
+
   return {
     data: transferData,
     specColors: specColors
@@ -869,5 +899,57 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
 
     SpreadsheetApp.getUi().alert('転記エラー:\n\n' + error.toString());
   }
+}
+
+/**
+ * ポリシー管理シートから「デフォルト」列が"デフォルト"の
+ * ポリシー名をタイプ別に取得する
+ * @param {Spreadsheet} ss 出品スプレッドシート
+ * @returns {{ shipping: string, return: string, payment: string }}
+ */
+function getDefaultPolicies(ss) {
+  const defaults = { shipping: '', return: '', payment: '' };
+  try {
+    const policySheet = ss.getSheetByName('ポリシー管理');
+    if (!policySheet) return defaults;
+
+    const lastRow = policySheet.getLastRow();
+    const lastCol = policySheet.getLastColumn();
+    if (lastRow < 2) return defaults;
+
+    const headers    = policySheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    const typeIdx    = headers.findIndex(function(h) { return String(h || '').trim() === 'POLICY_TYPE'; });
+    const nameIdx    = headers.findIndex(function(h) { return String(h || '').trim() === 'POLICY_NAME'; });
+    const defaultIdx = headers.findIndex(function(h) { return String(h || '').trim() === 'デフォルト'; });
+
+    if (typeIdx === -1 || nameIdx === -1 || defaultIdx === -1) {
+      Logger.log('⚠️ ポリシー管理シートに必要な列が見つかりません（POLICY_TYPE/POLICY_NAME/デフォルト）');
+      return defaults;
+    }
+
+    const data = policySheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    data.forEach(function(row) {
+      const type      = String(row[typeIdx]    || '').trim().toLowerCase();
+      const name      = String(row[nameIdx]    || '').trim();
+      const isDefault = String(row[defaultIdx] || '').trim() === 'デフォルト';
+
+      if (!isDefault || !name) return;
+
+      if (type.indexOf('fulfillment') !== -1 || type.indexOf('shipping') !== -1) {
+        if (!defaults.shipping) defaults.shipping = name;
+      } else if (type.indexOf('return') !== -1) {
+        if (!defaults.return) defaults.return = name;
+      } else if (type.indexOf('payment') !== -1) {
+        if (!defaults.payment) defaults.payment = name;
+      }
+    });
+
+    Logger.log('デフォルトポリシー: Shipping=' + defaults.shipping +
+               ' Return=' + defaults.return +
+               ' Payment=' + defaults.payment);
+  } catch(e) {
+    Logger.log('getDefaultPolicies エラー: ' + e.toString());
+  }
+  return defaults;
 }
 
