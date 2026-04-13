@@ -255,29 +255,68 @@ function calculateReward(spreadsheetId) {
       return { success: false, message: '報酬管理シートに「担当者名」列が見つかりません。' };
     }
 
-    // ④ 担当者管理シートからP-W列（業務名と担当者）を取得
+    // ④ 担当者管理シートから業務名・担当者を動的に取得
     const staffSheet = outputSS.getSheetByName('担当者管理');
     if (!staffSheet) {
       return { success: false, message: '出品DBに「担当者管理」シートが見つかりません。' };
     }
 
-    // P列=16列目〜W列=23列目
     const staffLastRow = staffSheet.getLastRow();
-    const taskData = staffSheet.getRange(1, 16, staffLastRow, 8).getValues();
+    const staffLastCol = staffSheet.getLastColumn();
 
-    // 1行目: 業務名リスト ["リサーチ","タイトル",...]
-    const taskNames = taskData[0].map(function(h) { return String(h || '').trim(); });
-    Logger.log('業務名リスト: ' + taskNames.join(', '));
+    // 担当者管理シートの全ヘッダーを1行目から取得
+    const staffHeaders = staffSheet.getRange(1, 1, 1, staffLastCol).getValues()[0];
 
-    // 2行目以降: 各業務のスタッフ名リスト
-    // staffByTask = { "リサーチ": ["田中","鈴木",...], ... }
+    // D-K列相当を「〇〇単価」ヘッダーで動的に特定
+    // 列番号ではなくヘッダー名で検索するため列がずれても対応可能
+    const tankaColIndices = []; // 単価列の列インデックス（0-based）
+    const taskNames = [];       // 業務名リスト（「単価」を除去）
+
+    staffHeaders.forEach(function(h, i) {
+      const header = String(h || '').trim();
+      if (header.endsWith('単価') && header !== '単価') {
+        const taskName = header.replace('単価', '').trim();
+        if (taskName) {
+          tankaColIndices.push(i);
+          taskNames.push(taskName);
+          Logger.log('単価列検出: ' + header + ' → 業務名: ' + taskName + ' （列' + (i + 1) + '）');
+        }
+      }
+    });
+
+    if (taskNames.length === 0) {
+      return { success: false, message: '担当者管理シートに「〇〇単価」形式のヘッダーが見つかりません。\nD-K列の1行目を確認してください。' };
+    }
+    Logger.log('業務名リスト（単価列から取得）: ' + taskNames.join(', '));
+
+    // P-W列相当を「〇〇」業務名で動的に特定（担当者名が入っている列）
+    const staffColIndices = []; // 担当者列の列インデックス（0-based）
+    taskNames.forEach(function(taskName) {
+      const colIdx = staffHeaders.findIndex(function(h) {
+        return String(h || '').trim() === taskName;
+      });
+      if (colIdx !== -1) {
+        staffColIndices.push(colIdx);
+        Logger.log('担当者列検出: ' + taskName + ' → 列' + (colIdx + 1));
+      } else {
+        Logger.log('⚠️ 担当者管理シートに「' + taskName + '」列が見つかりません');
+        staffColIndices.push(-1);
+      }
+    });
+
+    // 担当者管理シートの全データを取得
+    const staffAllData = staffSheet.getRange(1, 1, staffLastRow, staffLastCol).getValues();
+
+    // 2行目以降から各業務のスタッフ名リストを取得
     const staffByTask = {};
-    taskNames.forEach(function(name) { if (name) staffByTask[name] = []; });
-    for (let r = 1; r < taskData.length; r++) {
-      taskNames.forEach(function(name, colIdx) {
-        if (!name) return;
-        const staffName = String(taskData[r][colIdx] || '').trim();
-        if (staffName) staffByTask[name].push(staffName);
+    taskNames.forEach(function(name) { staffByTask[name] = []; });
+
+    for (let r = 1; r < staffAllData.length; r++) {
+      taskNames.forEach(function(taskName, idx) {
+        const colIdx = staffColIndices[idx];
+        if (colIdx === -1) return;
+        const staffName = String(staffAllData[r][colIdx] || '').trim();
+        if (staffName) staffByTask[taskName].push(staffName);
       });
     }
 
@@ -293,16 +332,24 @@ function calculateReward(spreadsheetId) {
     const outHeaderMap = {};
     outHeaders.forEach(function(h, i) { if (h) outHeaderMap[String(h).trim()] = i; });
 
-    // 管理年月列・担当者列のインデックス取得
+    // 管理年月列のインデックス取得
     const ymIdx = outHeaderMap['管理年月'];
     if (ymIdx === undefined) {
       return { success: false, message: '出品シートに「管理年月」列が見つかりません。' };
     }
 
-    // 担当列: リサーチ担当・担当1〜7 の順（業務名と対応）
-    const taskColNames = ['リサーチ担当','担当1','担当2','担当3','担当4','担当5','担当6','担当7'];
-    const taskColIndices = taskColNames.map(function(name) {
-      return outHeaderMap[name] !== undefined ? outHeaderMap[name] : -1;
+    // 出品シートの担当列を業務名の順序に合わせて動的マッピング
+    // リサーチ担当・担当1〜7 を業務名の順序に対応
+    const assignCols = ['リサーチ担当','担当1','担当2','担当3','担当4','担当5','担当6','担当7'];
+    const taskColIndices = taskNames.map(function(taskName, idx) {
+      const colName = assignCols[idx] || '';
+      const colIdx = outHeaderMap[colName];
+      if (colIdx === undefined) {
+        Logger.log('⚠️ 出品シートに「' + colName + '」列が見つかりません');
+        return -1;
+      }
+      Logger.log('出品列マッピング: ' + taskName + ' → ' + colName + '（列' + (colIdx + 1) + '）');
+      return colIdx;
     });
 
     // 対象管理年月の行を全取得
