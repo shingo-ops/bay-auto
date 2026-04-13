@@ -902,16 +902,56 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
 }
 
 /**
- * ポリシー管理シートから「デフォルト」列が"デフォルト"の
- * ポリシー名をタイプ別に取得する
- * @param {Spreadsheet} ss 出品スプレッドシート
+ * 出品シートのポリシー管理シートからデフォルトポリシーを取得
+ * @param {Spreadsheet} ss リサーチスプレッドシート（ツール設定シートを持つ）
  * @returns {{ shipping: string, return: string, payment: string }}
  */
 function getDefaultPolicies(ss) {
   const defaults = { shipping: '', return: '', payment: '' };
   try {
-    const policySheet = ss.getSheetByName('ポリシー管理');
-    if (!policySheet) return defaults;
+    // ツール設定シートから出品シートURLを取得
+    const toolSheet = ss.getSheetByName('ツール設定');
+    if (!toolSheet) {
+      Logger.log('⚠️ ツール設定シートが見つかりません');
+      return defaults;
+    }
+
+    const toolData   = toolSheet.getDataRange().getValues();
+    const toolHeaders = toolData[0];
+    const itemIdx  = toolHeaders.findIndex(function(h) { return String(h || '').trim() === '項目'; });
+    const valueIdx = toolHeaders.findIndex(function(h) { return String(h || '').trim() === '値'; });
+
+    if (itemIdx === -1 || valueIdx === -1) {
+      Logger.log('⚠️ ツール設定シートに項目/値列が見つかりません');
+      return defaults;
+    }
+
+    let listingSheetUrl = '';
+    for (let i = 1; i < toolData.length; i++) {
+      const key = String(toolData[i][itemIdx] || '').trim();
+      if (key === '出品シート') {
+        listingSheetUrl = String(toolData[i][valueIdx] || '').trim();
+        break;
+      }
+    }
+
+    if (!listingSheetUrl) {
+      Logger.log('⚠️ ツール設定シートに出品シートURLが設定されていません');
+      return defaults;
+    }
+
+    const match = listingSheetUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    if (!match || !match[1]) {
+      Logger.log('⚠️ 出品シートURLからIDを抽出できません');
+      return defaults;
+    }
+
+    const listingSS   = SpreadsheetApp.openById(match[1]);
+    const policySheet = listingSS.getSheetByName('ポリシー管理');
+    if (!policySheet) {
+      Logger.log('⚠️ 出品シートにポリシー管理シートが見つかりません');
+      return defaults;
+    }
 
     const lastRow = policySheet.getLastRow();
     const lastCol = policySheet.getLastColumn();
@@ -947,6 +987,7 @@ function getDefaultPolicies(ss) {
     Logger.log('デフォルトポリシー: Shipping=' + defaults.shipping +
                ' Return=' + defaults.return +
                ' Payment=' + defaults.payment);
+
   } catch(e) {
     Logger.log('getDefaultPolicies エラー: ' + e.toString());
   }
