@@ -1634,6 +1634,28 @@ function transferToOutputDb_phase1(spreadsheetId, rowNumber, listingData, output
     outputSheet.getRange(newRow, 1, 1, outputRow.length).setValues([outputRow]);
     Logger.log('✅ 出品DB Phase1転記完了: ' + newRow + '行目 / SKU: ' + listingData.sku);
 
+    // 状態列のプルダウンを出品シートからDBシートにコピー
+    const conditionColName = '状態';
+    const srcConditionCol = sourceHeaderMapping[conditionColName];
+    const dstConditionCol = outputColMap[conditionColName];
+
+    if (srcConditionCol && dstConditionCol !== undefined) {
+      try {
+        const srcValidation = sourceSheet
+          .getRange(rowNumber, srcConditionCol)
+          .getDataValidation();
+
+        if (srcValidation) {
+          outputSheet
+            .getRange(newRow, dstConditionCol + 1)
+            .setDataValidation(srcValidation);
+          Logger.log('✅ 状態プルダウンをDBにコピー完了');
+        }
+      } catch (e) {
+        Logger.log('⚠️ 状態プルダウンコピーエラー（転記は継続）: ' + e.toString());
+      }
+    }
+
     return { success: true, dbRow: newRow, sku: listingData.sku };
 
   } catch (error) {
