@@ -66,45 +66,33 @@ function syncSheet(spreadsheetId, sheetName, direction) {
       return { success: false, message: sourceLabel + 'に「' + sheetName + '」シートが見つかりません。' };
     }
 
-    // コピー先シートを取得または作成
-    let destSheet = destSS.getSheetByName(sheetName);
-    if (!destSheet) {
-      destSheet = destSS.insertSheet(sheetName);
-      Logger.log('✅ ' + destLabel + 'に「' + sheetName + '」シートを新規作成しました');
+    // コピー先に既存シートがあれば削除（copyTo後にリネームするため先に除去）
+    const existingDestSheet = destSS.getSheetByName(sheetName);
+    if (existingDestSheet) {
+      // シートが1枚しかない場合は削除できないためダミーシートを挿入
+      if (destSS.getSheets().length === 1) {
+        destSS.insertSheet('__temp__');
+      }
+      destSS.deleteSheet(existingDestSheet);
+      Logger.log('既存の「' + sheetName + '」シートを削除しました');
     }
 
-    // コピー元のデータを取得
+    // copyTo() で完全コピー（列幅・行高さ・書式・数式・プルダウン・結合すべて引き継ぎ）
+    const copiedSheet = sourceSheet.copyTo(destSS);
+    copiedSheet.setName(sheetName);
+    Logger.log('✅ copyTo() 完了: 「' + copiedSheet.getName() + '」');
+
+    // ダミーシートが残っていれば削除
+    const tempSheet = destSS.getSheetByName('__temp__');
+    if (tempSheet) destSS.deleteSheet(tempSheet);
+
     const lastRow = sourceSheet.getLastRow();
     const lastCol = sourceSheet.getLastColumn();
-
-    // コピー先をクリア
-    destSheet.clearContents();
-    destSheet.clearFormats();
-
-    if (lastRow > 0 && lastCol > 0) {
-      // 値をコピー
-      const values = sourceSheet.getRange(1, 1, lastRow, lastCol).getValues();
-      destSheet.getRange(1, 1, lastRow, lastCol).setValues(values);
-
-      // 書式をコピー（背景色・太字）
-      try {
-        const backgrounds = sourceSheet.getRange(1, 1, lastRow, lastCol).getBackgrounds();
-        const fontWeights  = sourceSheet.getRange(1, 1, lastRow, lastCol).getFontWeights();
-        destSheet.getRange(1, 1, lastRow, lastCol).setBackgrounds(backgrounds);
-        destSheet.getRange(1, 1, lastRow, lastCol).setFontWeights(fontWeights);
-      } catch (fmtErr) {
-        Logger.log('⚠️ 書式コピーエラー（値のコピーは完了）: ' + fmtErr.toString());
-      }
-
-      Logger.log('✅ ' + lastRow + '行 × ' + lastCol + '列をコピー完了');
-    } else {
-      Logger.log('⚠️ コピー元が空のためクリアのみ実行');
-    }
 
     return {
       success: true,
       message: '「' + sheetName + '」を ' + sourceLabel + ' → ' + destLabel + ' に同期しました。\n' +
-               '（' + lastRow + '行 × ' + lastCol + '列）'
+               '列幅・行高さ・書式・数式をすべて引き継ぎました。\n（' + lastRow + '行 × ' + lastCol + '列）'
     };
 
   } catch (e) {
