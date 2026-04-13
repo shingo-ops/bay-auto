@@ -1551,15 +1551,23 @@ function transferToOutputDb_phase1(spreadsheetId, rowNumber, listingData, output
 
     // 書き込み行を特定（出品URL列の最終データ行の次）
     const urlColInOutput = outputHeaderRow.indexOf('出品URL');
-    let newRow = 5;
+    let newRow = null;
     if (urlColInOutput !== -1) {
-      const colValues = outputSheet.getRange(1, urlColInOutput + 1, outputSheet.getLastRow(), 1).getValues();
-      for (let i = colValues.length - 1; i >= 0; i--) {
-        if (colValues[i][0] !== '') { newRow = i + 2; break; }
+      const lastRow = outputSheet.getLastRow();
+      const colValues = lastRow >= 5
+        ? outputSheet.getRange(5, urlColInOutput + 1, lastRow - 4, 1).getValues()
+        : [];
+      // 5行目以降で出品URLが空の行を先頭から探す（ロールバック後の空行を再利用）
+      for (let i = 0; i < colValues.length; i++) {
+        if (colValues[i][0] === '') {
+          newRow = i + 5;
+          break;
+        }
       }
-      if (newRow < 5) newRow = 5;
+      // 空行が見つからなければ最終行の次
+      if (!newRow) newRow = Math.max(lastRow + 1, 5);
     } else {
-      newRow = outputSheet.getLastRow() + 1;
+      newRow = Math.max(outputSheet.getLastRow() + 1, 5);
     }
 
     outputSheet.getRange(newRow, 1, 1, outputRow.length).setValues([outputRow]);
@@ -1644,17 +1652,33 @@ function transferToOutputDb_phase2(outputDbId, dbRow, itemId) {
  */
 function deleteDbRow(outputDbId, dbRow) {
   try {
-    Logger.log('=== 出品DB行削除: ' + dbRow + '行目 ===');
+    Logger.log('=== 出品DB行クリア: ' + dbRow + '行目 ===');
     const outputSpreadsheet = SpreadsheetApp.openById(outputDbId);
     const outputSheet = outputSpreadsheet.getSheetByName('出品');
     if (!outputSheet) {
       return { success: false, error: '出品DBに「出品」シートが見つかりません' };
     }
-    outputSheet.deleteRow(dbRow);
-    Logger.log('✅ 出品DB行削除完了: ' + dbRow + '行目');
+
+    const lastCol = outputSheet.getLastColumn();
+
+    // 内容のみクリア（書式・プルダウンは維持）
+    outputSheet.getRange(dbRow, 1, 1, lastCol).clearContent();
+
+    // 状態列のプルダウンのみ削除（出品シートと同じルール）
+    const headerRow = outputSheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    const headerMap = {};
+    headerRow.forEach(function(h, i) {
+      if (h) headerMap[String(h).trim()] = i + 1;
+    });
+    const conditionCol = headerMap['状態'];
+    if (conditionCol) {
+      outputSheet.getRange(dbRow, conditionCol).clearDataValidations();
+    }
+
+    Logger.log('✅ 出品DB行クリア完了: ' + dbRow + '行目');
     return { success: true };
   } catch (error) {
-    Logger.log('❌ 出品DB行削除エラー: ' + error.toString());
+    Logger.log('❌ 出品DB行クリアエラー: ' + error.toString());
     return { success: false, error: error.toString() };
   }
 }
