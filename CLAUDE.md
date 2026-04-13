@@ -16,7 +16,7 @@ Pythonスクリプトを管理するリポジトリ。
 - docs/: ドキュメント・仕様書
 
 ## コーディングルール
-- GASはES5互換で書く（letではなくvar）
+- GASはV8ランタイムで動作するためconst/let/アロー関数などES6+の記法を使用してよい
 - 関数名はキャメルケース（例: getConditionsByGroupId）
 - コメントは日本語でOK
 - エラーハンドリングは必ず入れる
@@ -34,10 +34,16 @@ Pythonスクリプトを管理するリポジトリ。
 - condition_group_map: グループ別conditions_json（26行）
 - category_condition_map: カテゴリ×コンディションマッピング
 
+## 開発フロー
+- 1機能1PR を原則とする
+- develop で実装 → 動作確認 → PR作成 → main マージ（本番反映）
+- 複数機能をまとめてdevelopに積み上げない
+- PR前に必ず動作確認を行う
+
 ## やってはいけないこと
 - .envファイルをコミットしない
 - APIキー・トークンをコードに直接書かない
-- GASでletやconstを使わない（ES5非対応）
+- GASでvarを使わない（V8対応のconst/letを使う）
 - category_masterを手動で削除しない
 
 ## デプロイ方法

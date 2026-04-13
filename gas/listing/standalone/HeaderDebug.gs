@@ -28,12 +28,12 @@ function getListingHeaders(spreadsheetId) {
       };
     }
 
-    const headerRow = 3;
+    const headerRow = 1;
     const lastCol = listingSheet.getLastColumn();
     const headers = listingSheet.getRange(headerRow, 1, 1, lastCol).getValues()[0];
 
     Logger.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    Logger.log('📋 "出品"シート - 3行目ヘッダー構造');
+    Logger.log('📋 "出品"シート - 1行目ヘッダー構造');
     Logger.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     Logger.log('');
     Logger.log('スプレッドシートID: ' + spreadsheetId);

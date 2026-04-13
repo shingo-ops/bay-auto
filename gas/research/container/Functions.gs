@@ -16,7 +16,7 @@
  * @returns {number} 空白行の行番号
  */
 function findEmptyRowInColumn(sheet, columnNumber) {
-  const dataStartRow = LISTING_ROWS.DATA_START; // 5行目
+  const dataStartRow = LISTING_ROWS.DATA_START;
   const lastRow = sheet.getLastRow();
 
   // データ開始行から最終行+10まで検索（関数が入っている可能性を考慮）
@@ -125,7 +125,7 @@ function checkVeroAndProhibitedWords(title, listingSpreadsheet) {
  * @returns {Object} ヘッダー名をキー、列番号を値とするマッピングオブジェクト
  */
 function buildHeaderMapping(listingSheet) {
-  const headerRow = 3; // ヘッダー行（2行目削除により4→3に変更）
+  const headerRow = 1; // ヘッダー行（1列目に変更）
   const lastCol = listingSheet.getLastColumn();
   const headers = listingSheet.getRange(headerRow, 1, 1, lastCol).getValues()[0];
 
@@ -270,8 +270,8 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
         return;
       }
       // 必須列：列が見つからない場合はエラー
-      const errorMsg = '出品シートのヘッダー行（3行目）に「' + headerName + '」という列名が見つかりませんでした。\n\n' +
-                       '出品シートを開いて、3行目に「' + headerName + '」列があるか確認してください。\n' +
+      const errorMsg = '出品シートのヘッダー行（1行目）に「' + headerName + '」という列名が見つかりませんでした。\n\n' +
+                       '出品シートを開いて、1行目に「' + headerName + '」列があるか確認してください。\n' +
                        '※列名の前後に余計なスペースやタブがないかも確認してください。';
       Logger.log(errorMsg);
       throw new Error(errorMsg);
@@ -296,18 +296,28 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
   // メモ
   setValueByHeader(LISTING_COLUMNS.MEMO.header, priceInfo.memo);
 
-  // 仕入元①とURL① - URLからサイト名を自動取得
-  const purchaseSourceName1 = priceInfo.purchaseUrl1 ? getPurchaseSourceNameFromUrl(priceInfo.purchaseUrl1) : '';
+  // 仕入元マッピングを1回だけ取得して3つのURLに使い回す
+  const srcMappings_ = getPurchaseSourceMappings();
+  const resolveSourceName_ = function(url) {
+    if (!url || typeof url !== 'string') return '';
+    for (var _i = 0; _i < srcMappings_.length; _i++) {
+      if (url.indexOf(srcMappings_[_i].url) === 0) return srcMappings_[_i].name;
+    }
+    return getSiteNameFromImageUrl(url);
+  };
+
+  // 仕入元①とURL①
+  const purchaseSourceName1 = priceInfo.purchaseUrl1 ? resolveSourceName_(priceInfo.purchaseUrl1) : '';
   setValueByHeader(LISTING_COLUMNS.PURCHASE_SOURCE_1.header, purchaseSourceName1);
   setValueByHeader(LISTING_COLUMNS.PURCHASE_URL_1.header, priceInfo.purchaseUrl1);
 
-  // 仕入元②とURL② - URLからサイト名を自動取得
-  const purchaseSourceName2 = priceInfo.purchaseUrl2 ? getPurchaseSourceNameFromUrl(priceInfo.purchaseUrl2) : '';
+  // 仕入元②とURL②
+  const purchaseSourceName2 = priceInfo.purchaseUrl2 ? resolveSourceName_(priceInfo.purchaseUrl2) : '';
   setValueByHeader(LISTING_COLUMNS.PURCHASE_SOURCE_2.header, purchaseSourceName2);
   setValueByHeader(LISTING_COLUMNS.PURCHASE_URL_2.header, priceInfo.purchaseUrl2);
 
-  // 仕入元③とURL③ - URLからサイト名を自動取得
-  const purchaseSourceName3 = priceInfo.purchaseUrl3 ? getPurchaseSourceNameFromUrl(priceInfo.purchaseUrl3) : '';
+  // 仕入元③とURL③
+  const purchaseSourceName3 = priceInfo.purchaseUrl3 ? resolveSourceName_(priceInfo.purchaseUrl3) : '';
   setValueByHeader(LISTING_COLUMNS.PURCHASE_SOURCE_3.header, purchaseSourceName3);
   setValueByHeader(LISTING_COLUMNS.PURCHASE_URL_3.header, priceInfo.purchaseUrl3);
 
@@ -558,6 +568,37 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
       return;
     }
 
+    // Condition列バリデーション（転記前チェック）
+    Logger.log('Condition列バリデーション開始');
+    const conditionVal_ = String(researchSheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.CONDITION.col).getValue() || '').trim();
+    const categoryIdForCheck_ = String(researchSheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.CATEGORY_ID.col).getValue() || '').trim();
+    if (conditionVal_ && categoryIdForCheck_) {
+      try {
+        const catMasterSs_ = openCategoryMasterSs();
+        if (catMasterSs_) {
+          const condGroup_ = getConditionGroupForCategory(catMasterSs_, categoryIdForCheck_);
+          if (condGroup_) {
+            const jaMap_ = getJaMapForGroup(catMasterSs_, condGroup_);
+            if (jaMap_) {
+              const allowedValues_ = Object.values(jaMap_).filter(function(v) { return v && v.trim() !== ''; });
+              if (allowedValues_.length > 0 && allowedValues_.indexOf(conditionVal_) === -1) {
+                SpreadsheetApp.getUi().alert(
+                  '転記エラー',
+                  '列「' + LISTING_COLUMNS.CONDITION.header + '」の値「' + conditionVal_ + '」はデータ入力規則に違反しています。\n許可される値: ' + allowedValues_.join(', '),
+                  SpreadsheetApp.getUi().ButtonSet.OK
+                );
+                Logger.log('❌ Condition値が規則違反のため転記中止: ' + conditionVal_);
+                return;
+              }
+              Logger.log('✅ Condition値検証OK: ' + conditionVal_);
+            }
+          }
+        }
+      } catch (validationErr_) {
+        Logger.log('⚠️ Condition検証スキップ（エラー）: ' + validationErr_.toString());
+      }
+    }
+
     // リサーチ方法を取得（C2セル）
     const researchMethod = researchSheet.getRange(RESEARCH_TOP_INFO.DATA_ROW, RESEARCH_TOP_INFO.COLUMNS.RESEARCH_METHOD.col).getValue();
 
@@ -585,14 +626,29 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
       specUrl = itemUrl;
     }
 
-    // eBay APIから商品情報を取得
-    SpreadsheetApp.getActiveSpreadsheet().toast('商品情報を取得中...', 'eBay API (' + policyLabel + ')', 10);
+    // _cache から商品情報を取得（キャッシュ優先、空の場合のみ API フォールバック）
+    SpreadsheetApp.getActiveSpreadsheet().toast('出品データを準備中...', '出品 (' + policyLabel + ')', 10);
 
-    // Item URLから基本情報を取得（タイトル用、カテゴリは整合性チェック用）
-    const itemInfo = getProductInfoFromUrl(itemUrl.toString());
-
-    // スペックURLからスペック情報を取得（カテゴリ、Brand, UPC, EAN, MPN, Item Specifics）
-    const specInfo = getProductInfoFromUrl(specUrl.toString());
+    let itemInfo, specInfo;
+    const cacheRow = getCacheRow2();
+    if (cacheRow) {
+      Logger.log('[転記] _cache ヒット: ' + cacheRow.itemUrl);
+      const fromCache = {
+        item:      { categoryId: cacheRow.categoryId, categoryPath: cacheRow.categoryName },
+        category:  { categoryId: cacheRow.categoryId, categoryName: cacheRow.categoryName, fullPath: cacheRow.categoryName },
+        specifics: cacheRow.specifics,
+        title:     cacheRow.title || '',
+        itemId:    extractItemIdFromUrl(cacheRow.itemUrl || itemUrl.toString()),
+        imageUrl:  ''
+      };
+      itemInfo = fromCache;
+      specInfo  = fromCache;
+    } else {
+      // _cache が空の場合のみ API を呼び出す
+      Logger.log('[転記] _cache ミス: API フォールバック');
+      itemInfo = getProductInfoFromUrl(itemUrl.toString());
+      specInfo  = getProductInfoFromUrl(specUrl.toString());
+    }
 
     // 転記先スプレッドシートを開く
     const config = getEbayConfig();
@@ -673,20 +729,26 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
       }
     }
 
-    // Item Specificsの項目名に色を設定
+    // Item Specificsの項目名に色を一括設定（色グループでバッチ処理）
     Logger.log('色設定開始: ' + specColors.length + '個');
+    const colorGroups_ = {};
     specColors.forEach(function(colorInfo, index) {
       const colNum = colorInfo.colIndex + 1;
-      Logger.log('[' + index + '] 色設定: colIndex=' + colorInfo.colIndex + ', colNum=' + colNum + ', color=' + colorInfo.color);
-
-      if (!colNum || colNum === null || colNum === undefined || isNaN(colNum) || colNum < 1) {
+      Logger.log('[' + index + '] 色: colIndex=' + colorInfo.colIndex + ', colNum=' + colNum + ', color=' + colorInfo.color);
+      if (!colNum || isNaN(colNum) || colNum < 1) {
         const errorMsg = 'Item Specificsの設定中にエラーが発生しました。\n出品シートのItem Specifics列（項目名列）が正しく設定されているか確認してください。';
         Logger.log(errorMsg);
         throw new Error(errorMsg);
       }
-
-      const cell = listingSheet.getRange(newRow, colNum);
-      cell.setFontColor(colorInfo.color);
+      if (!colorGroups_[colorInfo.color]) colorGroups_[colorInfo.color] = [];
+      colorGroups_[colorInfo.color].push(colNum);
+    });
+    Object.keys(colorGroups_).forEach(function(color) {
+      const notations = colorGroups_[color].map(function(colNum) {
+        return getColumnLetter(colNum) + newRow;
+      });
+      listingSheet.getRangeList(notations).setFontColor(color);
+      Logger.log('色一括設定: ' + color + ' × ' + notations.length + '件');
     });
 
     // 商品ページURLから画像をスクレイピング取得してGoogleドライブに保存
@@ -745,7 +807,7 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
                 Logger.log('画像' + (i + 1) + ': imageCol=' + imageCol + ', imageHeaderName=' + imageHeaderName);
 
                 if (!imageCol || imageCol === null || imageCol === undefined) {
-                  Logger.log('⚠️ 警告: 出品シートのヘッダー行（3行目）に「' + imageHeaderName + '」列が見つかりません。この画像の保存をスキップします。');
+                  Logger.log('⚠️ 警告: 出品シートのヘッダー行（1行目）に「' + imageHeaderName + '」列が見つかりません。この画像の保存をスキップします。');
                 } else {
                   listingSheet.getRange(newRow, imageCol).setValue(imageResult.driveUrl);
                   Logger.log('✅ 画像' + (i + 1) + 'を' + imageCol + '列目(' + imageHeaderName + ')に保存: ' + imageResult.driveUrl);

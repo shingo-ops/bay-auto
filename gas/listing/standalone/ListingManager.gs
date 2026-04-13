@@ -22,7 +22,7 @@ function getListingSheetHeaderMapping(spreadsheetId) {
     throw new Error('"出品"シートが見つかりません');
   }
 
-  // buildHeaderMapping()はConfig.gsで定義済み（3行目をヘッダーとして読み取り）
+  // buildHeaderMapping()はConfig.gsで定義済み（1行目をヘッダーとして読み取り）
   return buildHeaderMapping();
 }
 
@@ -265,7 +265,7 @@ function getWordCheckValue(spreadsheetId, rowNumber) {
  * "出品"シートから指定行のデータを読み取り
  *
  * @param {string} spreadsheetId スプレッドシートID（省略時はデフォルト使用）
- * @param {number} rowNumber 行番号（4行目以降）
+ * @param {number} rowNumber 行番号（5行目以降）
  * @returns {Object} 出品データ
  */
 function readListingDataFromSheet(spreadsheetId, rowNumber) {
@@ -421,10 +421,31 @@ function validateListingData(data) {
  * @returns {Object} { shippingPolicyId, returnPolicyId, paymentPolicyId }
  */
 function convertPolicyNamesToIds(data, spreadsheetId) {
-  // PolicyManager.gsで定義されているgetPolicyIdByName()を使用
-  const shippingPolicyId = getPolicyIdByName(data.shippingPolicy, 'Fulfillment Policy');
-  const returnPolicyId = getPolicyIdByName(data.returnPolicy, 'Return Policy');
-  const paymentPolicyId = getPolicyIdByName(data.paymentPolicy, 'Payment Policy');
+  // ポリシーシートを1回だけ読み込んで3件を一括検索
+  const policySheet = getTargetSpreadsheet().getSheetByName(SHEET_NAMES.POLICY_SETTINGS);
+  if (!policySheet) {
+    throw new Error('"' + SHEET_NAMES.POLICY_SETTINGS + '"シートが見つかりません。先に「ポリシー取得」を実行してください。');
+  }
+  const columnMap   = getPolicySheetColumnMap(policySheet);
+  const policyData  = policySheet.getDataRange().getValues();
+  const typeCol     = columnMap.POLICY_TYPE - 1;
+  const nameCol     = columnMap.POLICY_NAME - 1;
+  const idCol       = columnMap.POLICY_ID   - 1;
+
+  function lookupPolicy(targetName, targetType) {
+    for (var i = 1; i < policyData.length; i++) {
+      if (policyData[i][typeCol] === targetType && policyData[i][nameCol] === targetName) {
+        Logger.log('ポリシーID検索: ' + targetName + ' → ' + policyData[i][idCol]);
+        return policyData[i][idCol];
+      }
+    }
+    Logger.log('⚠️ ポリシーが見つかりません: ' + targetType + ' - ' + targetName);
+    return null;
+  }
+
+  const shippingPolicyId = lookupPolicy(data.shippingPolicy, 'Fulfillment Policy');
+  const returnPolicyId   = lookupPolicy(data.returnPolicy,   'Return Policy');
+  const paymentPolicyId  = lookupPolicy(data.paymentPolicy,  'Payment Policy');
 
   if (!shippingPolicyId) {
     throw new Error('Shipping Policy "' + data.shippingPolicy + '" が見つかりません。先に「ポリシー取得（タイプ別）」を実行してください。');
@@ -461,49 +482,114 @@ function convertPolicyNamesToIds(data, spreadsheetId) {
  * @param {Object} config getEbayConfig() の戻り値
  * @returns {string} eBay ConditionID
  */
-function resolveConditionIdFromMaster(conditionStr, config) {
-  try {
-    if (!conditionStr || String(conditionStr).trim() === '') return '3000';
-    const str = String(conditionStr).trim();
-
-    const masterSpreadsheetId = config.categoryMasterSpreadsheetId;
-    if (!masterSpreadsheetId) {
-      Logger.log('⚠️ categoryMasterSpreadsheetId 未設定。デフォルト3000を使用');
-      return '3000';
-    }
-
-    const masterSs = SpreadsheetApp.openById(masterSpreadsheetId);
-    const sheet = masterSs.getSheetByName('condition_ja_map');
-    if (!sheet) {
-      Logger.log('⚠️ condition_ja_map シートが見つかりません。デフォルト3000を使用');
-      return '3000';
-    }
-
-    const data    = sheet.getDataRange().getValues();
-    const headers = data[0];
-    const jaMapIdx = headers.indexOf('ja_map_json');
-    if (jaMapIdx === -1) {
-      Logger.log('⚠️ ja_map_json 列が見つかりません。デフォルト3000を使用');
-      return '3000';
-    }
-
-    for (let i = 1; i < data.length; i++) {
-      let jaMap;
-      try { jaMap = JSON.parse(String(data[i][jaMapIdx] || '{}')); } catch (e) { continue; }
-      for (const id in jaMap) {
-        if (String(jaMap[id]) === str) {
-          Logger.log('condition_id 解決: "' + str + '" → ' + id);
-          return String(id);
-        }
-      }
-    }
-
-    Logger.log('⚠️ condition_id が見つかりません: "' + str + '" → デフォルト3000');
-    return '3000';
-  } catch (e) {
-    Logger.log('⚠️ resolveConditionIdFromMaster エラー: ' + e.toString());
-    return '3000';
+/**
+ * ja_display → condition_id を4ステップで解決（フォールバックなし）
+ *
+ * 1. config.categoryMasterSpreadsheetId を取得
+ * 2. category_master_EBAY_US から categoryId の condition_group を取得
+ * 3. condition_ja_map から condition_group の ja_map_json を取得
+ * 4. ja_map_json を value→key で逆引きして condition_id を返す
+ *
+ * 解決できない場合は例外を throw（誤った condition_id での出品を防止）
+ *
+ * @param {string} conditionStr 状態列の値（ja_display）
+ * @param {Object} config       getEbayConfig() の戻り値
+ * @param {string} categoryId   出品カテゴリID
+ * @returns {string} eBay ConditionID
+ * @throws {Error} 解決できない場合
+ */
+function resolveConditionIdFromMaster(conditionStr, config, categoryId) {
+  if (!conditionStr || String(conditionStr).trim() === '') {
+    throw new Error('状態（コンディション）が入力されていません。');
   }
+  const str = String(conditionStr).trim();
+
+  // Step 0: 前提チェック
+  const masterSpreadsheetId = config.categoryMasterSpreadsheetId;
+  if (!masterSpreadsheetId) {
+    throw new Error('カテゴリマスタが設定されていません（ツール設定 > カテゴリマスタ）');
+  }
+  if (!categoryId || String(categoryId).trim() === '') {
+    throw new Error('カテゴリIDが設定されていません。');
+  }
+
+  // CacheService で結果をキャッシュ（TTL: 6時間）
+  const cache = CacheService.getScriptCache();
+  const cacheKey = 'condId_' + String(categoryId) + '_' + str;
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    Logger.log('condition_id キャッシュヒット: "' + str + '" → ' + cached + ' (category=' + categoryId + ')');
+    return cached;
+  }
+
+  const masterSs = SpreadsheetApp.openById(masterSpreadsheetId);
+
+  // Step 1: category_master_EBAY_US から condition_group を取得
+  const catSheet = masterSs.getSheetByName('category_master_EBAY_US');
+  if (!catSheet) throw new Error('category_master_EBAY_US シートが見つかりません');
+
+  const catData    = catSheet.getDataRange().getValues();
+  const catHeaders = catData[0];
+  const catIdIdx   = catHeaders.indexOf('category_id');
+  const groupIdx   = catHeaders.indexOf('condition_group');
+
+  if (catIdIdx === -1 || groupIdx === -1) {
+    throw new Error('category_master_EBAY_US に category_id / condition_group 列がありません');
+  }
+
+  let conditionGroup = null;
+  for (let i = 1; i < catData.length; i++) {
+    if (String(catData[i][catIdIdx]) === String(categoryId)) {
+      conditionGroup = String(catData[i][groupIdx] || '').trim();
+      break;
+    }
+  }
+  if (!conditionGroup) {
+    throw new Error('カテゴリID ' + categoryId + ' が category_master_EBAY_US に見つかりません');
+  }
+
+  // Step 2: condition_ja_map から ja_map_json を取得
+  const jaSheet = masterSs.getSheetByName('condition_ja_map');
+  if (!jaSheet) throw new Error('condition_ja_map シートが見つかりません');
+
+  const jaData     = jaSheet.getDataRange().getValues();
+  const jaHeaders  = jaData[0];
+  const jaGroupIdx = jaHeaders.indexOf('condition_group');
+  const jaMapIdx   = jaHeaders.indexOf('ja_map_json');
+
+  if (jaGroupIdx === -1 || jaMapIdx === -1) {
+    throw new Error('condition_ja_map に condition_group / ja_map_json 列がありません');
+  }
+
+  let jaMap = null;
+  for (let i = 1; i < jaData.length; i++) {
+    if (String(jaData[i][jaGroupIdx]) === conditionGroup) {
+      try {
+        jaMap = JSON.parse(String(jaData[i][jaMapIdx] || '{}'));
+      } catch (e) {
+        throw new Error('ja_map_json のパースに失敗: ' + e.toString());
+      }
+      break;
+    }
+  }
+  if (!jaMap) {
+    throw new Error('condition_group "' + conditionGroup + '" が condition_ja_map に見つかりません');
+  }
+
+  // Step 3: ja_map_json を value→key で逆引き
+  for (const id in jaMap) {
+    if (String(jaMap[id]) === str) {
+      const resolvedId = String(id);
+      Logger.log('condition_id 解決: "' + str + '" → ' + resolvedId + ' (category=' + categoryId + ', group=' + conditionGroup + ')');
+      cache.put(cacheKey, resolvedId, 21600); // 6時間キャッシュ
+      return resolvedId;
+    }
+  }
+
+  throw new Error(
+    '状態 "' + str + '" が condition_group "' + conditionGroup + '" の ja_map_json に見つかりません。\n' +
+    '利用可能な状態: ' + Object.values(jaMap).filter(Boolean).join('、')
+  );
 }
 
 /**
@@ -593,6 +679,8 @@ function setupSellerInfo(spreadsheetId) {
 
 /**
  * Trading API: EndFixedPriceItem（出品取り下げ）
+ * AddItem で出品された場合は EndFixedPriceItem が 'Input data is invalid' を返すため、
+ * そのときは EndItem にフォールバックする。
  *
  * @param {string} spreadsheetId
  * @param {string} itemId  eBay Item ID
@@ -603,12 +691,15 @@ function endFixedPriceItem(spreadsheetId, itemId) {
     if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
 
     autoRefreshTokenIfNeeded(spreadsheetId);
+    // autoRefreshTokenIfNeeded 内の finally で CURRENT_SPREADSHEET_ID がリセットされるため再セット
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
 
     const token  = getUserToken();
     const config = getEbayConfig();
     const apiUrl = getTradingApiUrl();
 
-    const xmlBody =
+    // --- EndFixedPriceItem を試行 ---
+    const xmlBodyFPI =
       '<?xml version="1.0" encoding="utf-8"?>' +
       '<EndFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">' +
         '<RequesterCredentials>' +
@@ -618,12 +709,195 @@ function endFixedPriceItem(spreadsheetId, itemId) {
         '<EndingReason>NotAvailable</EndingReason>' +
       '</EndFixedPriceItemRequest>';
 
-    const response   = UrlFetchApp.fetch(apiUrl, {
+    const buildHeaders = function(callName) {
+      return {
+        'X-EBAY-API-SITEID':              '0',
+        'X-EBAY-API-COMPATIBILITY-LEVEL': TRADING_API_VERSION,
+        'X-EBAY-API-CALL-NAME':           callName,
+        'X-EBAY-API-APP-NAME':            config.appId,
+        'X-EBAY-API-DEV-NAME':            config.devId,
+        'X-EBAY-API-CERT-NAME':           config.certId,
+        'Content-Type':                   'text/xml;charset=utf-8'
+      };
+    };
+
+    const responseFPI = UrlFetchApp.fetch(apiUrl, {
+      method: 'post',
+      headers: buildHeaders('EndFixedPriceItem'),
+      payload: xmlBodyFPI,
+      muteHttpExceptions: true
+    });
+
+    const statusFPI  = responseFPI.getResponseCode();
+    const textFPI    = responseFPI.getContentText();
+    Logger.log('EndFixedPriceItem Response Code: ' + statusFPI);
+
+    if (statusFPI === 200) {
+      const rootFPI  = XmlService.parse(textFPI).getRootElement();
+      const ns       = XmlService.getNamespace('urn:ebay:apis:eBLBaseComponents');
+      const ackFPI   = (rootFPI.getChild('Ack', ns) || { getText: function() { return ''; } }).getText();
+
+      if (ackFPI === 'Success' || ackFPI === 'Warning') {
+        Logger.log('✅ EndFixedPriceItem 成功: Item ID=' + itemId);
+        return { success: true };
+      }
+
+      // 'Input data is invalid' → AddItem 出品なので EndItem にフォールバック
+      const errElFPI  = rootFPI.getChild('Errors', ns);
+      const shortMsg  = errElFPI
+        ? (errElFPI.getChild('ShortMessage', ns) || { getText: function() { return ''; } }).getText()
+        : '';
+      Logger.log('EndFixedPriceItem 失敗: ' + shortMsg + ' → EndItem にフォールバック');
+
+      if (shortMsg.indexOf('Input data is invalid') === -1 && shortMsg !== '') {
+        // Input data is invalid 以外のエラーはフォールバックせずそのままエラーにする
+        throw new Error('APIエラー: ' + shortMsg);
+      }
+    } else {
+      Logger.log('EndFixedPriceItem HTTPエラー(' + statusFPI + ') → EndItem にフォールバック');
+    }
+
+    // --- EndItem にフォールバック ---
+    Logger.log('=== EndItem フォールバック ===');
+    const xmlBodyEI =
+      '<?xml version="1.0" encoding="utf-8"?>' +
+      '<EndItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">' +
+        '<RequesterCredentials>' +
+          '<eBayAuthToken>' + escapeXml(token) + '</eBayAuthToken>' +
+        '</RequesterCredentials>' +
+        '<ItemID>' + escapeXml(String(itemId)) + '</ItemID>' +
+        '<EndingReason>NotAvailable</EndingReason>' +
+      '</EndItemRequest>';
+
+    const responseEI   = UrlFetchApp.fetch(apiUrl, {
+      method: 'post',
+      headers: buildHeaders('EndItem'),
+      payload: xmlBodyEI,
+      muteHttpExceptions: true
+    });
+
+    const statusEI  = responseEI.getResponseCode();
+    const textEI    = responseEI.getContentText();
+    Logger.log('EndItem Response Code: ' + statusEI);
+
+    if (statusEI !== 200) {
+      throw new Error('EndItem HTTPエラー(' + statusEI + ')');
+    }
+
+    const rootEI = XmlService.parse(textEI).getRootElement();
+    const nsEI   = XmlService.getNamespace('urn:ebay:apis:eBLBaseComponents');
+    const ackEI  = (rootEI.getChild('Ack', nsEI) || { getText: function() { return ''; } }).getText();
+
+    if (ackEI === 'Success' || ackEI === 'Warning') {
+      Logger.log('✅ EndItem 成功: Item ID=' + itemId);
+      return { success: true };
+    }
+
+    const errElEI = rootEI.getChild('Errors', nsEI);
+    const errMsgEI = errElEI
+      ? (errElEI.getChild('ShortMessage', nsEI) || { getText: function() { return ''; } }).getText()
+      : textEI;
+    throw new Error('EndItem APIエラー: ' + errMsgEI);
+
+  } catch (e) {
+    Logger.log('❌ endFixedPriceItem エラー: ' + e.toString());
+    return { success: false, message: e.toString() };
+  } finally {
+    CURRENT_SPREADSHEET_ID = null;
+  }
+}
+
+/**
+ * Trading API: ReviseFixedPriceItem（出品更新）
+ *
+ * シートの現在の値で全フィールドを一括更新する。
+ *
+ * @param {string} spreadsheetId スプレッドシートID
+ * @param {number} rowNumber 出品シートの行番号
+ * @returns {{ success: boolean, message: string }}
+ */
+function reviseFixedPriceItem(spreadsheetId, rowNumber) {
+  try {
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+
+    // Item ID をシートから取得
+    const listingSheet = getTargetSpreadsheet().getSheetByName(SHEET_NAMES.LISTING);
+    if (!listingSheet) throw new Error('"出品"シートが見つかりません');
+
+    const headerMapping = buildHeaderMapping();
+    const itemIdCol = headerMapping['Item ID'];
+    if (!itemIdCol) throw new Error('「Item ID」列が見つかりません');
+
+    const itemId = String(listingSheet.getRange(rowNumber, itemIdCol).getValue() || '').trim();
+    if (!itemId) throw new Error('Item ID が空です。先に出品を実行してください。');
+
+    Logger.log('=== ReviseFixedPriceItem 開始: Item ID=' + itemId + ' 行=' + rowNumber + ' ===');
+
+    // トークン自動更新 → 内部 finally で CURRENT_SPREADSHEET_ID がリセットされるため再セット
+    autoRefreshTokenIfNeeded(spreadsheetId);
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+
+    const token  = getUserToken();
+    const config = getEbayConfig();
+    const apiUrl = getTradingApiUrl();
+
+    // シートから出品データを読み込み
+    const listingData = readListingDataFromSheet(spreadsheetId, rowNumber);
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId; // 再セット（readListingDataFromSheet内でリセットされる可能性）
+
+    // ConditionID を解決
+    const conditionId = resolveConditionIdFromMaster(listingData.condition, config, listingData.categoryId);
+
+    // XMLリクエスト構築
+    let xmlBody =
+      '<?xml version="1.0" encoding="utf-8"?>' +
+      '<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">' +
+        '<RequesterCredentials>' +
+          '<eBayAuthToken>' + escapeXml(token) + '</eBayAuthToken>' +
+        '</RequesterCredentials>' +
+        '<Item>' +
+          '<ItemID>' + escapeXml(itemId) + '</ItemID>' +
+          '<Title>' + escapeXml(listingData.title) + '</Title>' +
+          '<Description><![CDATA[' + (listingData.description || '') + ']]></Description>' +
+          '<StartPrice currencyID="USD">' + listingData.price + '</StartPrice>' +
+          '<Quantity>' + parseInt(listingData.quantity) + '</Quantity>' +
+          '<ConditionID>' + conditionId + '</ConditionID>';
+
+    // ConditionDescription
+    if (listingData.conditionDescription) {
+      xmlBody += '<ConditionDescription>' + escapeXml(listingData.conditionDescription) + '</ConditionDescription>';
+    }
+
+    // 画像
+    if (listingData.images && listingData.images.length > 0) {
+      xmlBody += '<PictureDetails>';
+      listingData.images.forEach(function(url) {
+        xmlBody += '<PictureURL>' + escapeXml(url) + '</PictureURL>';
+      });
+      xmlBody += '</PictureDetails>';
+    }
+
+    // Item Specifics
+    if (listingData.itemSpecifics && listingData.itemSpecifics.length > 0) {
+      xmlBody += '<ItemSpecifics>';
+      listingData.itemSpecifics.forEach(function(spec) {
+        xmlBody += '<NameValueList>' +
+          '<Name>' + escapeXml(spec.name) + '</Name>' +
+          '<Value>' + escapeXml(spec.value) + '</Value>' +
+          '</NameValueList>';
+      });
+      xmlBody += '</ItemSpecifics>';
+    }
+
+    xmlBody += '</Item></ReviseFixedPriceItemRequest>';
+
+    // API呼び出し
+    const response = UrlFetchApp.fetch(apiUrl, {
       method: 'post',
       headers: {
         'X-EBAY-API-SITEID':              '0',
         'X-EBAY-API-COMPATIBILITY-LEVEL': TRADING_API_VERSION,
-        'X-EBAY-API-CALL-NAME':           'EndFixedPriceItem',
+        'X-EBAY-API-CALL-NAME':           'ReviseFixedPriceItem',
         'X-EBAY-API-APP-NAME':            config.appId,
         'X-EBAY-API-DEV-NAME':            config.devId,
         'X-EBAY-API-CERT-NAME':           config.certId,
@@ -635,31 +909,37 @@ function endFixedPriceItem(spreadsheetId, itemId) {
 
     const statusCode   = response.getResponseCode();
     const responseText = response.getContentText();
-    Logger.log('EndFixedPriceItem Response Code: ' + statusCode);
+    Logger.log('ReviseFixedPriceItem Response: ' + statusCode);
 
     if (statusCode !== 200) {
-      throw new Error('HTTPエラー(' + statusCode + ')');
+      throw new Error('HTTPエラー(' + statusCode + '): ' + responseText);
     }
 
     const root = XmlService.parse(responseText).getRootElement();
     const ns   = XmlService.getNamespace('urn:ebay:apis:eBLBaseComponents');
-    const ackEl = root.getChild('Ack', ns);
-    const ack   = ackEl ? ackEl.getText() : '';
+    const ack  = (root.getChild('Ack', ns) || { getText: function() { return ''; } }).getText();
 
     if (ack === 'Success' || ack === 'Warning') {
-      Logger.log('✅ EndFixedPriceItem 成功: Item ID=' + itemId);
-      return { success: true };
+      Logger.log('✅ 更新成功: Item ID=' + itemId);
+      if (ack === 'Warning') {
+        const errEl = root.getChild('Errors', ns);
+        if (errEl) Logger.log('⚠️ Warning: ' + (errEl.getChild('ShortMessage', ns) || { getText: function() { return ''; } }).getText());
+      }
+      return {
+        success: true,
+        message: '✅ 更新が完了しました\n\nItem ID: ' + itemId + '\n商品名: ' + listingData.title
+      };
     }
 
-    const errEl = root.getChild('Errors', ns);
+    const errEl  = root.getChild('Errors', ns);
     const errMsg = errEl
-      ? (errEl.getChild('ShortMessage', ns) || { getText: function() { return ''; } }).getText()
+      ? (errEl.getChild('ShortMessage', ns) || { getText: function() { return responseText; } }).getText()
       : responseText;
     throw new Error('APIエラー: ' + errMsg);
 
   } catch (e) {
-    Logger.log('❌ EndFixedPriceItem エラー: ' + e.toString());
-    return { success: false, message: e.toString() };
+    Logger.log('❌ ReviseFixedPriceItem エラー: ' + e.toString());
+    return { success: false, message: '❌ 更新エラー:\n\n' + e.toString() };
   } finally {
     CURRENT_SPREADSHEET_ID = null;
   }
@@ -694,7 +974,7 @@ function escapeXml(str) {
 }
 
 /**
- * Trading API: AddItem（出品作成）
+ * Trading API: AddFixedPriceItem（出品作成）
  *
  * @param {Object} listingData 出品データ
  * @param {Object} policyIds ポリシーID
@@ -707,7 +987,7 @@ function addItemWithTradingApi(listingData, policyIds) {
 
   // XMLリクエストボディ構築
   let xmlBody = '<?xml version="1.0" encoding="utf-8"?>' +
-    '<AddItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">' +
+    '<AddFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">' +
     '<RequesterCredentials>' +
     '<eBayAuthToken>' + escapeXml(token) + '</eBayAuthToken>' +
     '</RequesterCredentials>' +
@@ -716,7 +996,7 @@ function addItemWithTradingApi(listingData, policyIds) {
     '<Description><![CDATA[' + (listingData.description || '') + ']]></Description>' +
     '<PrimaryCategory><CategoryID>' + listingData.categoryId + '</CategoryID></PrimaryCategory>' +
     '<StartPrice>' + listingData.price + '</StartPrice>' +
-    '<ConditionID>' + resolveConditionIdFromMaster(listingData.condition, config) + '</ConditionID>' +
+    '<ConditionID>' + resolveConditionIdFromMaster(listingData.condition, config, listingData.categoryId) + '</ConditionID>' +
     '<Country>JP</Country>' +
     '<Currency>USD</Currency>' +
     '<DispatchTimeMax>3</DispatchTimeMax>' +
@@ -820,7 +1100,7 @@ function addItemWithTradingApi(listingData, policyIds) {
   }
 
   xmlBody += '</Item>' +
-    '</AddItemRequest>';
+    '</AddFixedPriceItemRequest>';
 
   // HTTPリクエスト
   const options = {
@@ -828,7 +1108,7 @@ function addItemWithTradingApi(listingData, policyIds) {
     headers: {
       'X-EBAY-API-SITEID': '0',
       'X-EBAY-API-COMPATIBILITY-LEVEL': TRADING_API_VERSION,
-      'X-EBAY-API-CALL-NAME': 'AddItem',
+      'X-EBAY-API-CALL-NAME': 'AddFixedPriceItem',
       'X-EBAY-API-APP-NAME': config.appId,
       'X-EBAY-API-DEV-NAME': config.devId,
       'X-EBAY-API-CERT-NAME': config.certId,
@@ -838,7 +1118,7 @@ function addItemWithTradingApi(listingData, policyIds) {
     muteHttpExceptions: true
   };
 
-  Logger.log('=== Trading API: AddItem ===');
+  Logger.log('=== Trading API: AddFixedPriceItem ===');
   Logger.log('API URL: ' + apiUrl);
   Logger.log('SKU: ' + listingData.sku);
 
@@ -1046,7 +1326,7 @@ function transferToOutputDb(spreadsheetId, rowNumber, listingData, result) {
 
     if (!outputDbId || outputDbId === '') {
       Logger.log('⚠️ "出品DB"が設定されていません。転記をスキップします。');
-      return false;
+      return { success: false, error: '「ツール設定」シートの「出品DB」にスプレッドシートURLが設定されていません。' };
     }
 
     Logger.log('出品DB ID: ' + outputDbId);
@@ -1061,179 +1341,607 @@ function transferToOutputDb(spreadsheetId, rowNumber, listingData, result) {
       Logger.log('✅ "出品"シートを作成しました');
     }
 
-    // ヘッダー行が存在しない場合は作成（1行目: タイトル、2行目: 補足、3行目: ヘッダー）
+    // ヘッダー行が存在しない場合は作成（1行目: ヘッダー）
     const lastRow = outputSheet.getLastRow();
-    if (lastRow < 3) {
+    if (lastRow < 1) {
       // 元の"出品"シートからヘッダーをコピー
       const sourceSheet = getTargetSpreadsheet(spreadsheetId).getSheetByName(SHEET_NAMES.LISTING);
-      const sourceHeaders = sourceSheet.getRange(1, 1, 3, sourceSheet.getLastColumn()).getValues();
+      const sourceHeaders = sourceSheet.getRange(1, 1, 1, sourceSheet.getLastColumn()).getValues();
 
-      outputSheet.getRange(1, 1, 3, sourceHeaders[0].length).setValues(sourceHeaders);
+      outputSheet.getRange(1, 1, 1, sourceHeaders[0].length).setValues(sourceHeaders);
       Logger.log('✅ ヘッダー行をコピーしました');
     }
 
-    // 出品元シートから行データを取得
+    // 出品元シートのデータとヘッダーマッピングを取得
     const sourceSheet = getTargetSpreadsheet(spreadsheetId).getSheetByName(SHEET_NAMES.LISTING);
-    const lastCol = sourceSheet.getLastColumn();
-    const rowData = sourceSheet.getRange(rowNumber, 1, 1, lastCol).getValues()[0];
+    const srcLastCol = sourceSheet.getLastColumn();
+    const sourceValues = sourceSheet.getRange(rowNumber, 1, 1, srcLastCol).getValues()[0];
+    const sourceDisplayValues = sourceSheet.getRange(rowNumber, 1, 1, srcLastCol).getDisplayValues()[0];
+    const sourceHeaderMapping = buildHeaderMapping(); // 出品シート: 列名 → 1-based index
 
-    // ヘッダーマッピングを取得
-    const headerMapping = buildHeaderMapping();
+    // 出品DBのヘッダー行（1行目）を取得し、不可視文字を除去
+    const outputHeaderRowRaw = outputSheet.getRange(1, 1, 1, outputSheet.getLastColumn()).getValues()[0];
+    const outputHeaderRow = outputHeaderRowRaw.map(function(h) { return String(h || '').trim(); });
 
-    // Item IDを追加
-    const itemIdCol = headerMapping['Item ID'];
-    if (itemIdCol) {
-      rowData[itemIdCol - 1] = result.itemId;
+    // 出品DB列名 → 0-based index のマップ
+    const outputColMap = {};
+    outputHeaderRow.forEach(function(h, i) {
+      if (h) outputColMap[h] = i;
+    });
+
+    // 出品DBの列構造に合わせて書き込み配列を生成（列名ベースのマッピング）
+    const skipCols = ['容積重量(g)', '適用重量(g)'];
+    const outputRow = new Array(outputHeaderRow.length).fill('');
+    outputHeaderRow.forEach(function(h, i) {
+      if (!h) return;
+      if (skipCols.indexOf(h) !== -1) return;
+      const srcIdx = sourceHeaderMapping[h];
+      if (srcIdx) {
+        const rawVal = sourceValues[srcIdx - 1];
+        outputRow[i] = (rawVal instanceof Date) ? sourceDisplayValues[srcIdx - 1] : rawVal;
+      }
+    });
+
+    // --- 出品後に確定する特殊フィールドを上書き設定 ---
+
+    // Item ID
+    if ('Item ID' in outputColMap) {
+      outputRow[outputColMap['Item ID']] = result.itemId;
       Logger.log('Item IDを設定: ' + result.itemId);
+    } else {
+      Logger.log('⚠️ 出品DBに "Item ID" 列が見つかりません');
     }
 
-    // 出品URLを生成して追加
+    // 出品URL
     const listingUrl = 'https://www.ebay.com/itm/' + result.itemId;
-    const listingUrlCol = headerMapping['出品URL'];
-    if (listingUrlCol) {
-      rowData[listingUrlCol - 1] = listingUrl;
+    if ('出品URL' in outputColMap) {
+      outputRow[outputColMap['出品URL']] = listingUrl;
       Logger.log('出品URLを設定: ' + listingUrl);
     } else {
-      Logger.log('⚠️ "出品URL"列が見つかりません');
+      Logger.log('⚠️ 出品DBに "出品URL" 列が見つかりません');
     }
 
-    // 出品ステータスを"出品中"に設定（列名ゆれに対応）
-    const statusCol = headerMapping['出品ステータス'] || headerMapping['ステータス'];
-    if (statusCol) {
-      rowData[statusCol - 1] = '出品中';
-      Logger.log('ステータスを設定: 出品中');
+    // 出品ステータス（列名ゆれに対応）
+    const statusKey = ('出品ステータス' in outputColMap) ? '出品ステータス' : 'ステータス';
+    if (statusKey in outputColMap) {
+      outputRow[outputColMap[statusKey]] = 'Active';
+      Logger.log('ステータスを設定: Active');
     } else {
-      Logger.log('⚠️ "出品ステータス"/"ステータス"列が見つかりません');
+      Logger.log('⚠️ 出品DBに "出品ステータス"/"ステータス" 列が見つかりません');
     }
 
-    // 現在日時を取得
+    // タイムスタンプ関連
     const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const hour = String(now.getHours()).padStart(2, '0');
+    const year   = now.getFullYear();
+    const month  = String(now.getMonth() + 1).padStart(2, '0');
+    const day    = String(now.getDate()).padStart(2, '0');
+    const hour   = String(now.getHours()).padStart(2, '0');
     const minute = String(now.getMinutes()).padStart(2, '0');
     const second = String(now.getSeconds()).padStart(2, '0');
-
-    // タイムスタンプフォーマット: yyyy/mm/dd/hh:mm:ss
-    const timestamp = year + '/' + month + '/' + day + '/' + hour + ':' + minute + ':' + second;
-
-    // 管理年月フォーマット: yyyymm (数値)
+    const timestamp       = year + '/' + month + '/' + day + '/' + hour + ':' + minute + ':' + second;
     const managementMonth = parseInt(year + month);
 
-    // 出品タイムスタンプを設定
-    const timestampCol = headerMapping['出品タイムスタンプ'];
-    if (timestampCol) {
-      rowData[timestampCol - 1] = timestamp;
+    if ('出品タイムスタンプ' in outputColMap) {
+      outputRow[outputColMap['出品タイムスタンプ']] = timestamp;
       Logger.log('出品タイムスタンプを設定: ' + timestamp);
     } else {
-      Logger.log('⚠️ "出品タイムスタンプ"列が見つかりません');
+      Logger.log('⚠️ 出品DBに "出品タイムスタンプ" 列が見つかりません');
     }
 
-    // 管理年月を設定
-    const managementMonthCol = headerMapping['管理年月'];
-    if (managementMonthCol) {
-      rowData[managementMonthCol - 1] = managementMonth;
+    if ('管理年月' in outputColMap) {
+      outputRow[outputColMap['管理年月']] = managementMonth;
       Logger.log('管理年月を設定: ' + managementMonth);
     } else {
-      Logger.log('⚠️ "管理年月"列が見つかりません');
+      Logger.log('⚠️ 出品DBに "管理年月" 列が見つかりません');
     }
 
-    // 出品DB末尾に追加
-    const newRow = outputSheet.getLastRow() + 1;
-    outputSheet.getRange(newRow, 1, 1, rowData.length).setValues([rowData]);
+    // 対応状況をまとめてログ出力
+    Logger.log('=== 転記列マッピング（出品DB列名 → 値の元） ===');
+    outputHeaderRow.forEach(function(h, i) {
+      const colName = String(h || '').trim();
+      if (!colName) return;
+      const specialFields = ['Item ID', '出品URL', '出品ステータス', 'ステータス', '出品タイムスタンプ', '管理年月'];
+      if (specialFields.indexOf(colName) !== -1) {
+        Logger.log('  [' + (i + 1) + '] ' + colName + ' ← （出品後に設定）');
+      } else if (sourceHeaderMapping[colName]) {
+        Logger.log('  [' + (i + 1) + '] ' + colName + ' ← 出品シート[' + sourceHeaderMapping[colName] + ']');
+      } else {
+        Logger.log('  [' + (i + 1) + '] ' + colName + ' ← ⚠️ 出品シートに列なし（空白）');
+      }
+    });
+
+    // 実データが入っている最終行を特定（出品URL列で判定）
+    const urlColInOutput = outputHeaderRow.indexOf('出品URL');
+    let newRow = 5;
+    if (urlColInOutput !== -1) {
+      const colValues = outputSheet.getRange(1, urlColInOutput + 1, outputSheet.getLastRow(), 1).getValues();
+      for (let i = colValues.length - 1; i >= 0; i--) {
+        if (colValues[i][0] !== '') { newRow = i + 2; break; }
+      }
+      if (newRow < 5) newRow = 5;
+    } else {
+      newRow = outputSheet.getLastRow() + 1;
+    }
+    Logger.log('出品DB書き込み行: ' + newRow + '行目');
+    outputSheet.getRange(newRow, 1, 1, outputRow.length).setValues([outputRow]);
 
     Logger.log('✅ 出品DB転記完了: ' + newRow + '行目に追加');
 
-    return true;
+    const missingCols = [];
+    outputHeaderRow.forEach(function(h) {
+      if (!h) return;
+      const specialFields = ['Item ID', '出品URL', '出品ステータス', 'ステータス', '出品タイムスタンプ', '管理年月'];
+      if (specialFields.indexOf(h) === -1 && !sourceHeaderMapping[h]) {
+        missingCols.push(h);
+      }
+    });
+    if (missingCols.length > 0) {
+      Logger.log('⚠️ 転記できなかった列: ' + missingCols.join(', '));
+    }
+    return { success: true, missingCols: missingCols };
 
   } catch (error) {
     Logger.log('❌ 出品DB転記エラー: ' + error.toString());
     // 転記エラーは致命的ではないので、エラーをログに記録して続行
-    return false;
+    return { success: false, error: error.toString() };
   } finally {
     CURRENT_SPREADSHEET_ID = null;
   }
 }
 
 /**
- * 出品シートからデータをクリアして行を最下部に移動
+ * 出品DB転記 Phase1: 商品データのみ転記（特殊フィールドは空欄）
+ * 出品前に実行し、書き込み行番号を返す
  *
- * データをクリアして、SKUが入力されている最後尾の下に移動させる
- * これにより数式・入力規則・非表示設定を維持したまま、
- * データ行が上に集まり、空白行が下に集まる
+ * @param {string} spreadsheetId 出品スプレッドシートID
+ * @param {number} rowNumber 出品行番号
+ * @param {Object} listingData 出品データ
+ * @param {string} outputDbId 出品DBスプレッドシートID
+ * @returns {{ success: boolean, dbRow?: number, error?: string }}
+ */
+function transferToOutputDb_phase1(spreadsheetId, rowNumber, listingData, outputDbId) {
+  try {
+    Logger.log('=== 出品DB転記 Phase1開始 ===');
+
+    if (!outputDbId || outputDbId === '') {
+      return { success: false, error: '「ツール設定」シートの「出品DB」にスプレッドシートURLが設定されていません。' };
+    }
+
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+
+    const outputSpreadsheet = SpreadsheetApp.openById(outputDbId);
+    let outputSheet = outputSpreadsheet.getSheetByName('出品');
+    if (!outputSheet) {
+      outputSheet = outputSpreadsheet.insertSheet('出品');
+      Logger.log('✅ "出品"シートを作成しました');
+    }
+
+    // ヘッダー行が存在しない場合はコピー
+    if (outputSheet.getLastRow() < 1) {
+      const sourceSheet = getTargetSpreadsheet(spreadsheetId).getSheetByName(SHEET_NAMES.LISTING);
+      const sourceHeaders = sourceSheet.getRange(1, 1, 1, sourceSheet.getLastColumn()).getValues();
+      outputSheet.getRange(1, 1, 1, sourceHeaders[0].length).setValues(sourceHeaders);
+      Logger.log('✅ ヘッダー行をコピーしました');
+    }
+
+    const sourceSheet = getTargetSpreadsheet(spreadsheetId).getSheetByName(SHEET_NAMES.LISTING);
+    const srcLastCol = sourceSheet.getLastColumn();
+    const sourceValues = sourceSheet.getRange(rowNumber, 1, 1, srcLastCol).getValues()[0];
+    const sourceDisplayValues = sourceSheet.getRange(rowNumber, 1, 1, srcLastCol).getDisplayValues()[0];
+    const sourceHeaderMapping = buildHeaderMapping();
+
+    const outputHeaderRowRaw = outputSheet.getRange(1, 1, 1, outputSheet.getLastColumn()).getValues()[0];
+    const outputHeaderRow = outputHeaderRowRaw.map(function(h) { return String(h || '').trim(); });
+    const outputColMap = {};
+    outputHeaderRow.forEach(function(h, i) { if (h) outputColMap[h] = i; });
+
+    const specialFields = ['Item ID', '出品URL', '出品ステータス', 'ステータス', '出品タイムスタンプ', '管理年月'];
+    const skipCols = ['容積重量(g)', '適用重量(g)'];
+    const outputRow = new Array(outputHeaderRow.length).fill('');
+    outputHeaderRow.forEach(function(h, i) {
+      if (!h) return;
+      if (skipCols.indexOf(h) !== -1) return;
+      if (specialFields.indexOf(h) !== -1) return; // Phase2で書き込む
+      const srcIdx = sourceHeaderMapping[h];
+      if (srcIdx) {
+        const rawVal = sourceValues[srcIdx - 1];
+        outputRow[i] = (rawVal instanceof Date) ? sourceDisplayValues[srcIdx - 1] : rawVal;
+      }
+    });
+
+    // 書き込み行を特定（出品URL列の最終データ行の次）
+    const urlColInOutput = outputHeaderRow.indexOf('出品URL');
+    let newRow = null;
+    if (urlColInOutput !== -1) {
+      const lastRow = outputSheet.getLastRow();
+      const colValues = lastRow >= 5
+        ? outputSheet.getRange(5, urlColInOutput + 1, lastRow - 4, 1).getValues()
+        : [];
+      // 5行目以降で出品URLが空の行を先頭から探す（ロールバック後の空行を再利用）
+      for (let i = 0; i < colValues.length; i++) {
+        if (colValues[i][0] === '') {
+          newRow = i + 5;
+          break;
+        }
+      }
+      // 空行が見つからなければ最終行の次
+      if (!newRow) newRow = Math.max(lastRow + 1, 5);
+    } else {
+      newRow = Math.max(outputSheet.getLastRow() + 1, 5);
+    }
+
+    outputSheet.getRange(newRow, 1, 1, outputRow.length).setValues([outputRow]);
+    Logger.log('✅ 出品DB Phase1転記完了: ' + newRow + '行目');
+
+    return { success: true, dbRow: newRow };
+
+  } catch (error) {
+    Logger.log('❌ 出品DB Phase1転記エラー: ' + error.toString());
+    return { success: false, error: error.toString() };
+  } finally {
+    CURRENT_SPREADSHEET_ID = null;
+  }
+}
+
+/**
+ * 出品DB転記 Phase2: 特殊フィールドのみ更新（Item ID・URL・ステータス等）
+ *
+ * @param {string} outputDbId 出品DBスプレッドシートID
+ * @param {number} dbRow 更新対象行番号
+ * @param {string} itemId eBay Item ID
+ * @returns {{ success: boolean, error?: string }}
+ */
+function transferToOutputDb_phase2(outputDbId, dbRow, itemId) {
+  try {
+    Logger.log('=== 出品DB転記 Phase2開始 ===');
+
+    const outputSpreadsheet = SpreadsheetApp.openById(outputDbId);
+    const outputSheet = outputSpreadsheet.getSheetByName('出品');
+    if (!outputSheet) {
+      return { success: false, error: '出品DBに「出品」シートが見つかりません' };
+    }
+
+    const outputHeaderRowRaw = outputSheet.getRange(1, 1, 1, outputSheet.getLastColumn()).getValues()[0];
+    const outputHeaderRow = outputHeaderRowRaw.map(function(h) { return String(h || '').trim(); });
+    const outputColMap = {};
+    outputHeaderRow.forEach(function(h, i) { if (h) outputColMap[h] = i; });
+
+    const now = new Date();
+    const year   = now.getFullYear();
+    const month  = String(now.getMonth() + 1).padStart(2, '0');
+    const day    = String(now.getDate()).padStart(2, '0');
+    const hour   = String(now.getHours()).padStart(2, '0');
+    const minute = String(now.getMinutes()).padStart(2, '0');
+    const second = String(now.getSeconds()).padStart(2, '0');
+    const timestamp       = year + '/' + month + '/' + day + '/' + hour + ':' + minute + ':' + second;
+    const managementMonth = parseInt(year + month);
+    const listingUrl      = 'https://www.ebay.com/itm/' + itemId;
+
+    if ('Item ID' in outputColMap) {
+      outputSheet.getRange(dbRow, outputColMap['Item ID'] + 1).setValue(itemId);
+    }
+    if ('出品URL' in outputColMap) {
+      outputSheet.getRange(dbRow, outputColMap['出品URL'] + 1).setValue(listingUrl);
+    }
+    const statusKey = ('出品ステータス' in outputColMap) ? '出品ステータス' : 'ステータス';
+    if (statusKey in outputColMap) {
+      outputSheet.getRange(dbRow, outputColMap[statusKey] + 1).setValue('Active');
+    }
+    if ('出品タイムスタンプ' in outputColMap) {
+      outputSheet.getRange(dbRow, outputColMap['出品タイムスタンプ'] + 1).setValue(timestamp);
+    }
+    if ('管理年月' in outputColMap) {
+      outputSheet.getRange(dbRow, outputColMap['管理年月'] + 1).setValue(managementMonth);
+    }
+
+    Logger.log('✅ 出品DB Phase2更新完了: ' + dbRow + '行目 / Item ID: ' + itemId);
+    return { success: true };
+
+  } catch (error) {
+    Logger.log('❌ 出品DB Phase2更新エラー: ' + error.toString());
+    return { success: false, error: error.toString() };
+  }
+}
+
+/**
+ * 出品DBの指定行を削除（出品失敗時のロールバック用）
+ *
+ * @param {string} outputDbId 出品DBスプレッドシートID
+ * @param {number} dbRow 削除対象行番号
+ * @returns {{ success: boolean, error?: string }}
+ */
+function deleteDbRow(outputDbId, dbRow) {
+  try {
+    Logger.log('=== 出品DB行クリア: ' + dbRow + '行目 ===');
+    const outputSpreadsheet = SpreadsheetApp.openById(outputDbId);
+    const outputSheet = outputSpreadsheet.getSheetByName('出品');
+    if (!outputSheet) {
+      return { success: false, error: '出品DBに「出品」シートが見つかりません' };
+    }
+
+    const lastCol = outputSheet.getLastColumn();
+
+    // 内容のみクリア（書式・プルダウンは維持）
+    outputSheet.getRange(dbRow, 1, 1, lastCol).clearContent();
+
+    // 状態列のプルダウンのみ削除（出品シートと同じルール）
+    const headerRow = outputSheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    const headerMap = {};
+    headerRow.forEach(function(h, i) {
+      if (h) headerMap[String(h).trim()] = i + 1;
+    });
+    const conditionCol = headerMap['状態'];
+    if (conditionCol) {
+      outputSheet.getRange(dbRow, conditionCol).clearDataValidations();
+    }
+
+    Logger.log('✅ 出品DB行クリア完了: ' + dbRow + '行目');
+    return { success: true };
+  } catch (error) {
+    Logger.log('❌ 出品DB行クリアエラー: ' + error.toString());
+    return { success: false, error: error.toString() };
+  }
+}
+
+/**
+ * 出品シートにItem ID・タイムスタンプ・ステータスを書き戻す
+ * （DB更新失敗時のフォールバック用）
+ *
+ * @param {string} spreadsheetId 出品スプレッドシートID
+ * @param {number} rowNumber 書き戻し対象行番号
+ * @param {string} itemId eBay Item ID
+ */
+function writeBackToListingSheet(spreadsheetId, rowNumber, itemId) {
+  try {
+    Logger.log('=== 出品シート書き戻し開始 ===');
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+
+    const listingSheet = getTargetSpreadsheet(spreadsheetId).getSheetByName(SHEET_NAMES.LISTING);
+    if (!listingSheet) return;
+
+    const headerMapping = buildHeaderMapping();
+
+    const itemIdCol = headerMapping['Item ID'];
+    if (itemIdCol) listingSheet.getRange(rowNumber, itemIdCol).setValue(itemId);
+
+    const now = new Date();
+    const year   = now.getFullYear();
+    const month  = String(now.getMonth() + 1).padStart(2, '0');
+    const day    = String(now.getDate()).padStart(2, '0');
+    const hour   = String(now.getHours()).padStart(2, '0');
+    const minute = String(now.getMinutes()).padStart(2, '0');
+    const second = String(now.getSeconds()).padStart(2, '0');
+    const timestamp = year + '/' + month + '/' + day + '/' + hour + ':' + minute + ':' + second;
+
+    const tsCol = headerMapping['出品タイムスタンプ'];
+    if (tsCol) listingSheet.getRange(rowNumber, tsCol).setValue(timestamp);
+
+    const statusKey = headerMapping['出品ステータス'] ? '出品ステータス' : 'ステータス';
+    const statusCol = headerMapping[statusKey];
+    if (statusCol) listingSheet.getRange(rowNumber, statusCol).setValue('Active');
+
+    Logger.log('✅ 出品シート書き戻し完了: ' + rowNumber + '行目 / Item ID: ' + itemId);
+  } catch (error) {
+    Logger.log('❌ 出品シート書き戻しエラー: ' + error.toString());
+  } finally {
+    CURRENT_SPREADSHEET_ID = null;
+  }
+}
+
+/**
+ * 出品シートと出品DBのヘッダー一覧を Logger に出力するデバッグ関数
+ * GASエディタから直接実行して確認する
+ *
+ * @param {string} spreadsheetId 出品スプレッドシートID
+ */
+function debugTransferHeaders(spreadsheetId) {
+  try {
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+
+    const config = getEbayConfig();
+    const outputDbId = config.outputDbSpreadsheetId;
+
+    // 出品シートヘッダー
+    const sourceSheet = getTargetSpreadsheet().getSheetByName(SHEET_NAMES.LISTING);
+    const sourceHeaders = sourceSheet.getRange(1, 1, 1, sourceSheet.getLastColumn()).getValues()[0];
+
+    Logger.log('=== 出品シート ヘッダー一覧（1行目）===');
+    sourceHeaders.forEach(function(h, i) {
+      if (h) Logger.log('  ' + (i + 1) + '列: ' + h);
+    });
+    Logger.log('合計: ' + sourceHeaders.filter(Boolean).length + '列');
+
+    if (!outputDbId) {
+      Logger.log('⚠️ 出品DBが設定されていません');
+      return;
+    }
+
+    // 出品DBヘッダー
+    const outputSheet = SpreadsheetApp.openById(outputDbId).getSheetByName('出品');
+    if (!outputSheet) {
+      Logger.log('⚠️ 出品DBに「出品」シートが見つかりません');
+      return;
+    }
+    const outputHeaders = outputSheet.getRange(1, 1, 1, outputSheet.getLastColumn()).getValues()[0];
+
+    Logger.log('=== 出品DB ヘッダー一覧（1行目）===');
+    outputHeaders.forEach(function(h, i) {
+      if (h) Logger.log('  ' + (i + 1) + '列: ' + h);
+    });
+    Logger.log('合計: ' + outputHeaders.filter(Boolean).length + '列');
+
+    // 対応関係チェック
+    Logger.log('=== 転記対応チェック ===');
+    outputHeaders.forEach(function(h, i) {
+      if (!h) return;
+      const srcCol = sourceHeaders.indexOf(h);
+      if (srcCol !== -1) {
+        Logger.log('  ✅ 出品DB[' + (i + 1) + '] "' + h + '" ← 出品シート[' + (srcCol + 1) + ']');
+      } else {
+        Logger.log('  ❌ 出品DB[' + (i + 1) + '] "' + h + '" ← 出品シートに列なし（転記不可）');
+      }
+    });
+
+  } catch (e) {
+    Logger.log('❌ debugTransferHeaders エラー: ' + e.toString());
+  } finally {
+    CURRENT_SPREADSHEET_ID = null;
+  }
+}
+
+/**
+ * clasp run 用: 出品DBの1行目(ヘッダー)と指定行(データ)を読み取り、空欄列を報告する
+ *
+ * @param {string} dbSpreadsheetId 出品DBスプレッドシートID
+ * @param {number} dataRow データ行番号（省略時は5）
+ */
+function inspectOutputDbRow(dbSpreadsheetId, dataRow) {
+  try {
+    const row = dataRow || 5;
+    const ss = SpreadsheetApp.openById(dbSpreadsheetId);
+    const sheet = ss.getSheetByName('出品');
+    if (!sheet) return '⚠️ 出品DBに「出品」シートが見つかりません';
+
+    const lastCol = sheet.getLastColumn();
+    const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    const values  = sheet.getRange(row, 1, 1, lastCol).getValues()[0];
+
+    const lines = [];
+    const emptyList = [];
+    const filledList = [];
+
+    lines.push('=== 出品DB「出品」シート 行' + row + ' 内容 ===');
+    lines.push('');
+
+    for (var i = 0; i < headers.length; i++) {
+      var h = String(headers[i] || '').trim();
+      var v = values[i];
+      var vStr = (v === null || v === undefined || v === '') ? '（空）' : String(v);
+      lines.push('  [' + (i + 1) + '] ' + (h || '（ヘッダーなし）') + ': ' + vStr);
+      if (v === null || v === undefined || v === '') {
+        emptyList.push('  [' + (i + 1) + '] ' + (h || '（ヘッダーなし）'));
+      } else {
+        filledList.push('  [' + (i + 1) + '] ' + h);
+      }
+    }
+
+    lines.push('');
+    lines.push('=== 値あり列（' + filledList.length + '列）===');
+    filledList.forEach(function(l) { lines.push(l); });
+
+    lines.push('');
+    lines.push('=== 空欄列（' + emptyList.length + '列）===');
+    if (emptyList.length === 0) {
+      lines.push('  なし（全列に値あり）');
+    } else {
+      emptyList.forEach(function(l) { lines.push(l); });
+    }
+
+    return lines.join('\n');
+  } catch (e) {
+    return 'エラー: ' + e.toString() + '\n' + e.stack;
+  }
+}
+
+/**
+ * clasp run 用: debugTransferHeaders の結果を文字列で返す
+ * Logger.log ではなく return value として clasp run に出力する
+ *
+ * @param {string} spreadsheetId 出品スプレッドシートID
+ */
+function getTransferHeadersResult(spreadsheetId) {
+  try {
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+    const config = getEbayConfig();
+    const outputDbId = config.outputDbSpreadsheetId;
+    const lines = [];
+
+    const sourceSheet = getTargetSpreadsheet().getSheetByName(SHEET_NAMES.LISTING);
+    const sourceHeaders = sourceSheet.getRange(1, 1, 1, sourceSheet.getLastColumn()).getValues()[0].filter(Boolean);
+    lines.push('=== 出品シート ヘッダー（' + sourceHeaders.length + '列）===');
+    sourceHeaders.forEach(function(h, i) { lines.push('  ' + (i + 1) + ': ' + h); });
+
+    if (!outputDbId) {
+      lines.push('⚠️ 出品DBが設定されていません');
+      return lines.join('\n');
+    }
+
+    const outputSheet = SpreadsheetApp.openById(outputDbId).getSheetByName('出品');
+    if (!outputSheet) {
+      lines.push('⚠️ 出品DBに「出品」シートが見つかりません');
+      return lines.join('\n');
+    }
+    const outputHeadersRaw = outputSheet.getRange(1, 1, 1, outputSheet.getLastColumn()).getValues()[0];
+    const outputHeaders = outputHeadersRaw.filter(Boolean);
+    lines.push('');
+    lines.push('=== 出品DB ヘッダー（' + outputHeaders.length + '列）===');
+    outputHeadersRaw.forEach(function(h, i) { if (h) lines.push('  ' + (i + 1) + ': ' + h); });
+
+    lines.push('');
+    lines.push('=== 転記対応チェック ===');
+    const missing = [];
+    outputHeadersRaw.forEach(function(h, i) {
+      if (!h) return;
+      const srcIdx = sourceHeaders.indexOf(h);
+      if (srcIdx !== -1) {
+        lines.push('  ✅ DB[' + (i + 1) + '] "' + h + '" ← 出品シート[' + (srcIdx + 1) + ']');
+      } else {
+        lines.push('  ❌ DB[' + (i + 1) + '] "' + h + '" ← 転記不可');
+        missing.push(h);
+      }
+    });
+
+    lines.push('');
+    lines.push('=== 転記不可列（出品DB側にあるが出品シートにない） ===');
+    if (missing.length === 0) {
+      lines.push('  なし（全列転記可能）');
+    } else {
+      missing.forEach(function(h) { lines.push('  - ' + h); });
+    }
+
+    return lines.join('\n');
+  } catch (e) {
+    return 'エラー: ' + e.toString() + '\n' + e.stack;
+  } finally {
+    CURRENT_SPREADSHEET_ID = null;
+  }
+}
+
+/**
+ * 出品シートの指定行データをクリア（書式は維持）
+ * - セル値をクリア（clearContent）
+ * - データ入力規則（プルダウン等）も全列クリア（clearDataValidations）
  *
  * @param {string} spreadsheetId スプレッドシートID
  * @param {number} rowNumber クリアする行番号
  */
 function clearAndMoveListingRow(spreadsheetId, rowNumber) {
   try {
-    Logger.log('=== 出品シート行クリア・移動開始 ===');
+    Logger.log('=== 出品シート行クリア開始 ===');
 
-    if (spreadsheetId) {
-      CURRENT_SPREADSHEET_ID = spreadsheetId;
-    }
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
 
     const listingSheet = getTargetSpreadsheet(spreadsheetId).getSheetByName(SHEET_NAMES.LISTING);
+    if (!listingSheet) throw new Error('"出品"シートが見つかりません');
 
-    if (!listingSheet) {
-      throw new Error('"出品"シートが見つかりません');
-    }
+    if (rowNumber < 5) throw new Error('ヘッダー行（1-4行目）は処理できません');
 
-    // 4行目以降のみ処理可能（ヘッダー保護）
-    if (rowNumber < 4) {
-      throw new Error('ヘッダー行（1-3行目）は処理できません');
-    }
-
-    // ヘッダーマッピングを取得してSKU列を特定
-    const headerMapping = buildHeaderMapping();
-    const skuCol = headerMapping['SKU'];
-
-    if (!skuCol) {
-      throw new Error('SKU列が見つかりません');
-    }
-
-    // データをクリア（数式・入力規則・書式は維持）
     const lastCol = listingSheet.getLastColumn();
+
+    // データをクリア（書式は維持）
     listingSheet.getRange(rowNumber, 1, 1, lastCol).clearContent();
+
+    // 状態列のデータ入力規則（プルダウン）のみ消去
+    const headerMapping = buildHeaderMapping();
+    const conditionCol = headerMapping['状態'];
+    if (conditionCol) {
+      listingSheet.getRange(rowNumber, conditionCol).clearDataValidations();
+    }
 
     Logger.log('✅ データクリア完了: ' + rowNumber + '行目');
 
-    // SKUが入力されている最後尾の行を検索
-    const lastRow = listingSheet.getLastRow();
-    let lastDataRow = 3; // 最低でも3行目（ヘッダー行）
-
-    for (let i = lastRow; i >= 4; i--) {
-      const skuValue = listingSheet.getRange(i, skuCol).getValue();
-      if (skuValue && String(skuValue).trim() !== '') {
-        lastDataRow = i;
-        break;
-      }
-    }
-
-    Logger.log('SKU最終データ行: ' + lastDataRow + '行目');
-
-    // クリアした行が最終データ行より上にある場合のみ移動
-    if (rowNumber <= lastDataRow) {
-      // 行を移動（最終データ行の直下に移動）
-      const targetRow = lastDataRow + 1;
-
-      Logger.log('行を移動: ' + rowNumber + '行目 → ' + targetRow + '行目');
-
-      // moveRowsを使用して行を移動
-      listingSheet.moveRows(
-        listingSheet.getRange(rowNumber + ':' + rowNumber),
-        targetRow
-      );
-
-      Logger.log('✅ 行移動完了');
-    } else {
-      Logger.log('✅ すでに最下部にあるため移動不要');
-    }
-
   } catch (error) {
-    // 行移動エラーは非致命的（出品自体は成功）→ ログのみ
-    Logger.log('⚠️ 行クリア・移動エラー（出品は成功済み）: ' + error.toString());
+    Logger.log('⚠️ 行クリアエラー（出品は成功済み）: ' + error.toString());
   } finally {
     CURRENT_SPREADSHEET_ID = null;
   }
@@ -1255,14 +1963,12 @@ function deleteListingRow(spreadsheetId, rowNumber) {
  * 出品実行（メイン関数）
  *
  * @param {string} spreadsheetId スプレッドシートID（省略時はデフォルト使用）
- * @param {number} rowNumber 出品する行番号（4行目以降）
+ * @param {number} rowNumber 出品する行番号（5行目以降）
  * @returns {Object} { success: boolean, sku: string, itemId: string, promotedListing?: Object, transferred: boolean, rowCleared: boolean }
  */
 function createListing(spreadsheetId, rowNumber) {
   try {
-    if (spreadsheetId) {
-      CURRENT_SPREADSHEET_ID = spreadsheetId;
-    }
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
 
     Logger.log('=== 出品処理開始: 行' + rowNumber + ' ===');
 
@@ -1278,43 +1984,81 @@ function createListing(spreadsheetId, rowNumber) {
     // 3. ポリシーID変換
     const policyIds = convertPolicyNamesToIds(listingData, spreadsheetId);
 
-    // 4. Trading API: AddItem実行
-    const result = addItemWithTradingApi(listingData, policyIds);
+    // Phase1: 出品前にDB転記（商品データのみ・特殊フィールドは空欄）
+    const config = getEbayConfig();
+    const outputDbId = config.outputDbSpreadsheetId;
+    let dbRow = null;
+    if (outputDbId && outputDbId !== '') {
+      const phase1Result = transferToOutputDb_phase1(spreadsheetId, rowNumber, listingData, outputDbId);
+      if (!phase1Result.success) {
+        return {
+          success: false,
+          message: '⚠️ DB転記に失敗したため出品を中止しました。\n\n理由: ' + phase1Result.error
+        };
+      }
+      dbRow = phase1Result.dbRow;
+      // phase1のfinally でCURRENT_SPREADSHEET_IDがリセットされるため再設定
+      if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+    } else {
+      Logger.log('⚠️ 出品DBが未設定のため転記をスキップします');
+    }
 
+    // Phase2: eBay出品
+    let result;
+    try {
+      result = addItemWithTradingApi(listingData, policyIds);
+    } catch (ebayError) {
+      // 出品失敗 → Phase1で作成したDB行を削除してロールバック
+      if (dbRow && outputDbId) {
+        deleteDbRow(outputDbId, dbRow);
+        Logger.log('⚠️ 出品失敗のためDB転記データを削除しました');
+      }
+      return {
+        success: false,
+        message: '❌ 出品に失敗しました。' + (dbRow ? 'DB転記データを削除しました。' : '') + '\n\n理由: ' + ebayError.toString()
+      };
+    }
     Logger.log('✅ 出品完了');
 
-    // 5. Promoted Listing設定（値が入力されている場合のみ）
+    // Phase3: Promoted Listing設定（任意）
     let promotedListingResult = null;
     if (listingData.promotedListing && !isNaN(parseFloat(listingData.promotedListing))) {
       const adRate = parseFloat(listingData.promotedListing);
       promotedListingResult = createPromotedListing(result.itemId, adRate);
-
       if (!promotedListingResult.success) {
         Logger.log('⚠️ Promoted Listing設定に失敗しましたが、出品は成功しています');
         Logger.log('エラー: ' + promotedListingResult.error);
       }
     }
 
-    // 6. 出品DBに転記
-    const transferred = transferToOutputDb(spreadsheetId, rowNumber, listingData, result);
-
-    // 7. 出品シートからデータをクリアして行を最下部に移動（転記成功時のみ）
-    let rowCleared = false;
-    if (transferred) {
-      clearAndMoveListingRow(spreadsheetId, rowNumber);
-      rowCleared = true;
-    } else {
-      Logger.log('⚠️ 転記がスキップされたため、行クリア・移動も省略します');
+    // Phase4: DB側に特殊フィールドを更新（Item ID・URL・ステータス等）
+    if (dbRow && outputDbId) {
+      const phase2Result = transferToOutputDb_phase2(outputDbId, dbRow, result.itemId);
+      if (!phase2Result.success) {
+        // DB更新失敗 → 出品シートに書き戻してユーザーに通知
+        writeBackToListingSheet(spreadsheetId, rowNumber, result.itemId);
+        return {
+          success: true,
+          transferred: false,
+          warning: '⚠️ 出品は完了しましたが、DB更新に失敗しました。\n出品シートにItem IDを記録しました。\n\n理由: ' + phase2Result.error,
+          itemId: result.itemId,
+          sku: listingData.sku || '',
+          promotedListing: promotedListingResult || null,
+          rowCleared: false
+        };
+      }
     }
 
+    // Phase5: 出品シートのデータクリア
+    clearAndMoveListingRow(spreadsheetId, rowNumber);
     return {
       success: true,
-      sku: listingData.sku,
+      transferred: dbRow !== null,
       itemId: result.itemId,
-      promotedListing: promotedListingResult,
-      transferred: transferred,
-      rowCleared: rowCleared,
-      veroWarning: String(listingData.wordCheck || '').trim() === 'VERO'
+      sku: listingData.sku || '',
+      promotedListing: promotedListingResult || null,
+      rowCleared: true,
+      missingCols: []
     };
 
   } catch (error) {
@@ -1357,8 +2101,8 @@ function processOnEdit(e, spreadsheetId) {
       return;
     }
 
-    // ヘッダー行（1-3行目）は処理しない
-    if (row <= 3) {
+    // ヘッダー行（1-4行目）は処理しない
+    if (row <= 4) {
       Logger.log('⚠️ ヘッダー行なのでスキップ');
       return;
     }
@@ -1443,3 +2187,75 @@ function debugHeaderMapping() {
     return null;
   }
 }
+
+/**
+ * transferToOutputDb() の単体テスト
+ * eBay出品なしで転記処理だけを確認する
+ * GASエディタから直接実行する
+ *
+ * Item IDが入っている最初の行（5行目以降）を自動検索して転記テストを実行する
+ */
+function testTransferToOutputDb() {
+  const spreadsheetId = PropertiesService.getScriptProperties().getProperty('DEFAULT_SPREADSHEET_ID');
+  if (!spreadsheetId) {
+    Logger.log('❌ スクリプトプロパティに DEFAULT_SPREADSHEET_ID が未設定です');
+    return;
+  }
+
+  // 実際の出品シートからそのままデータを読む
+  const sourceSheet = getTargetSpreadsheet(spreadsheetId).getSheetByName(SHEET_NAMES.LISTING);
+  const srcLastCol = sourceSheet.getLastColumn();
+
+  // Item ID列を特定
+  const headerMapping = buildHeaderMapping();
+  const itemIdCol = headerMapping['Item ID'];
+  if (!itemIdCol) {
+    Logger.log('❌ "Item ID"列がヘッダー行に見つかりません');
+    return;
+  }
+
+  // 5行目以降でItem IDが入っている最初の行を自動検索
+  const lastRow = sourceSheet.getLastRow();
+  const itemIdValues = sourceSheet.getRange(5, itemIdCol, Math.max(lastRow - 4, 1), 1).getValues();
+  let testRow = null;
+  for (let i = 0; i < itemIdValues.length; i++) {
+    if (String(itemIdValues[i][0] || '').trim() !== '') {
+      testRow = i + 5; // 5行目始まり
+      break;
+    }
+  }
+
+  if (!testRow) {
+    Logger.log('❌ Item IDが入っている行が見つかりません（5行目以降を検索しました）');
+    return;
+  }
+
+  const listingData = sourceSheet.getRange(testRow, 1, 1, srcLastCol).getValues()[0];
+  const realItemId = String(sourceSheet.getRange(testRow, itemIdCol).getDisplayValue()).trim();
+
+  // 実際のItem IDで転記実行
+  const realResult = {
+    itemId: realItemId,
+    success: true
+  };
+
+  Logger.log('=== 転記テスト開始 ===');
+  Logger.log('対象行: ' + testRow + ' / Item ID: ' + realItemId);
+
+  const transferred = transferToOutputDb(spreadsheetId, testRow, listingData, realResult);
+
+  Logger.log('=== テスト結果 ===');
+  Logger.log(JSON.stringify(transferred));
+
+  if (transferred && transferred.success) {
+    Logger.log('✅ 転記成功');
+    if (transferred.missingCols && transferred.missingCols.length > 0) {
+      Logger.log('⚠️ 不一致列: ' + transferred.missingCols.join(', '));
+    } else {
+      Logger.log('✅ 全列マッチ');
+    }
+  } else {
+    Logger.log('❌ 転記失敗: ' + (transferred ? transferred.error : '不明'));
+  }
+}
+

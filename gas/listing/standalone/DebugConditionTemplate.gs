@@ -58,18 +58,18 @@ function debugConditionTemplateHeaders(spreadsheetId) {
       Logger.log('');
     }
 
-    // データ行のサンプルを確認（4-8行目）
+    // データ行のサンプルを確認（2-6行目）
     Logger.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    Logger.log('データサンプル（4-8行目）:');
+    Logger.log('データサンプル（2-6行目）:');
     Logger.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     Logger.log('');
 
-    if (lastRow >= 4) {
-      const sampleRows = Math.min(8, lastRow);
-      const sampleData = templateSheet.getRange(4, 1, sampleRows - 3, lastCol).getValues();
+    if (lastRow >= 2) {
+      const sampleRows = Math.min(6, lastRow);
+      const sampleData = templateSheet.getRange(2, 1, sampleRows - 1, lastCol).getValues();
 
       for (let i = 0; i < sampleData.length; i++) {
-        const rowNum = i + 4;
+        const rowNum = i + 2;
         Logger.log('--- ' + rowNum + '行目 ---');
 
         for (let j = 0; j < sampleData[i].length; j++) {
@@ -137,12 +137,12 @@ function debugListingSheetHeaders(spreadsheetId) {
     Logger.log('=== "出品"シート構造 ===');
     Logger.log('');
 
-    // ヘッダー行（3行目）
-    const headerRow = 3;
+    // ヘッダー行（1行目）
+    const headerRow = 1;
     const lastCol = listingSheet.getLastColumn();
     const headers = listingSheet.getRange(headerRow, 1, 1, lastCol).getValues()[0];
 
-    Logger.log('ヘッダー行: ' + headerRow + '行目');
+    Logger.log('ヘッダー行: 1行目（非表示）');
     Logger.log('最終列: ' + lastCol);
     Logger.log('');
     Logger.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
