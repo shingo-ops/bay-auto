@@ -1674,7 +1674,7 @@ function transferToOutputDb_phase1(spreadsheetId, rowNumber, listingData, output
  * @param {string} itemId eBay Item ID
  * @returns {{ success: boolean, error?: string }}
  */
-function transferToOutputDb_phase2(outputDbId, dbRow, itemId, sku) {
+function transferToOutputDb_phase2(outputDbId, dbRow, itemId, sku, epsImages) {
   try {
     Logger.log('=== 出品DB転記 Phase2開始 ===');
 
@@ -1734,6 +1734,33 @@ function transferToOutputDb_phase2(outputDbId, dbRow, itemId, sku) {
     }
     if ('管理年月' in outputColMap) {
       outputSheet.getRange(dbRow, outputColMap['管理年月'] + 1).setValue(managementMonth);
+    }
+
+    // EPS URLを画像列に書き戻す
+    if (epsImages && epsImages.length > 0) {
+      const imageColNames = [];
+      for (let i = 1; i <= 23; i++) {
+        imageColNames.push('画像' + i);
+      }
+      imageColNames.push('ストア画像');
+
+      let epsIndex = 0;
+      for (let i = 0; i < imageColNames.length; i++) {
+        if (epsIndex >= epsImages.length) break;
+        const colName = imageColNames[i];
+        if (!(colName in outputColMap)) continue;
+        // 元のDB値が空でなければEPS URLで上書き
+        const currentVal = String(
+          outputSheet.getRange(dbRow, outputColMap[colName] + 1).getValue() || ''
+        ).trim();
+        if (currentVal !== '') {
+          outputSheet.getRange(dbRow, outputColMap[colName] + 1)
+            .setValue(epsImages[epsIndex]);
+          Logger.log('DB EPS URL書き込み: ' + colName + ' → ' + epsImages[epsIndex].substring(0, 50));
+          epsIndex++;
+        }
+      }
+      Logger.log('✅ DB EPS URL書き込み完了: ' + epsIndex + '列');
     }
 
     Logger.log('✅ 出品DB Phase2更新完了: ' + dbRow + '行目 / Item ID: ' + itemId);
@@ -2184,9 +2211,10 @@ function createListing(spreadsheetId, rowNumber) {
     // Phase1.5: 画像をEPSにアップロード
     const config2 = getEbayConfig();
     const accessToken = config2.userToken;
+    let epsImages = null;
     if (listingData.images && listingData.images.length > 0) {
       Logger.log('=== 画像EPSアップロード開始: ' + listingData.images.length + '枚 ===');
-      const epsImages = uploadAllImagesToEPS(listingData.images, accessToken);
+      epsImages = uploadAllImagesToEPS(listingData.images, accessToken);
       if (epsImages.length === 0) {
         // 全画像のアップロード失敗 → DB行をロールバックして終了
         if (dbRow && outputDbId) deleteDbRow(outputDbId, dbRow, listingData.sku);
@@ -2197,12 +2225,6 @@ function createListing(spreadsheetId, rowNumber) {
       }
       listingData.images = epsImages;
       Logger.log('✅ 画像EPSアップロード完了: ' + epsImages.length + '枚');
-
-      // EPS URLを出品シートに書き戻す（次回更新時のAPI節約）
-      const headerMappingForEps = buildHeaderMapping();
-      writeEpsUrlsToSheet(spreadsheetId, rowNumber, listingData.images, epsImages, headerMappingForEps);
-      // CURRENT_SPREADSHEET_IDを再セット
-      if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
     }
     // CURRENT_SPREADSHEET_IDを再セット
     if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
@@ -2237,7 +2259,7 @@ function createListing(spreadsheetId, rowNumber) {
 
     // Phase4: DB側に特殊フィールドを更新（Item ID・URL・ステータス等）
     if (dbRow && outputDbId) {
-      const phase2Result = transferToOutputDb_phase2(outputDbId, dbRow, result.itemId, listingData.sku);
+      const phase2Result = transferToOutputDb_phase2(outputDbId, dbRow, result.itemId, listingData.sku, epsImages);
       if (!phase2Result.success) {
         // DB更新失敗 → 出品シートに書き戻してユーザーに通知
         writeBackToListingSheet(spreadsheetId, rowNumber, result.itemId);
