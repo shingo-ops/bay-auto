@@ -216,7 +216,7 @@ function extractImageUrls(rowData, headerMapping) {
     const url = getValueByHeader(rowData, headerMapping, imageHeader);
 
     if (url && String(url).trim() !== '') {
-      urls.push(String(url).trim());
+      urls.push(convertImageUrl(String(url).trim()));
     }
   }
 
@@ -226,7 +226,7 @@ function extractImageUrls(rowData, headerMapping) {
   const storeImageUrl = getValueByHeader(rowData, headerMapping, 'ストア画像');
 
   if (storeImageUrl && String(storeImageUrl).trim() !== '') {
-    urls.push(String(storeImageUrl).trim());
+    urls.push(convertImageUrl(String(storeImageUrl).trim()));
     Logger.log('✅ ストア画像を' + urls.length + '枚目に追加: ' + String(storeImageUrl).substring(0, 50) + '...');
   } else {
     Logger.log('⚠️ ストア画像が設定されていません');
@@ -235,6 +235,34 @@ function extractImageUrls(rowData, headerMapping) {
   Logger.log('最終画像数: ' + urls.length + '枚（商品画像 + ストア画像）');
 
   return urls;
+}
+
+/**
+ * Google Drive の共有URLをeBayがアクセス可能な直接表示URLに変換する
+ * @param {string} url 画像URL
+ * @returns {string} 変換後のURL
+ */
+function convertImageUrl(url) {
+  if (!url || typeof url !== 'string') return url;
+  url = url.trim();
+
+  // https://drive.google.com/file/d/FILEID/view... → 直接表示URL
+  const driveFileMatch = url.match(/drive\.google\.com\/file\/d\/([^\/\?]+)/);
+  if (driveFileMatch) {
+    const converted = 'https://drive.google.com/uc?export=view&id=' + driveFileMatch[1];
+    Logger.log('画像URL変換: ' + url + ' → ' + converted);
+    return converted;
+  }
+
+  // https://drive.google.com/open?id=FILEID → 直接表示URL
+  const driveOpenMatch = url.match(/drive\.google\.com\/open\?id=([^&]+)/);
+  if (driveOpenMatch) {
+    const converted = 'https://drive.google.com/uc?export=view&id=' + driveOpenMatch[1];
+    Logger.log('画像URL変換: ' + url + ' → ' + converted);
+    return converted;
+  }
+
+  return url;
 }
 
 /**
