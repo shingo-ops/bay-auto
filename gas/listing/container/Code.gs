@@ -35,6 +35,9 @@ function onOpen() {
   ui.createMenu('⚙️')
     .addItem('権限承認・トリガー登録', 'authorizeScript')
     .addSeparator()
+    .addItem('OAuth認証URL生成', 'menuOAuthGenerateUrl')
+    .addItem('認証コードでトークン取得', 'menuOAuthExchangeCode')
+    .addSeparator()
     .addItem('出品者情報設定', 'menuSetupSellerInfo')
     .addItem('ポリシー取得', 'menuGetPolicies')
     .addItem('ポリシー更新', 'menuSyncPolicies')
@@ -320,8 +323,14 @@ function handleEdit(e) {
     const row       = range.getRow();
     const col       = range.getColumn();
 
-    // 出品シート以外は無視
-    if (sheetName !== '出品') return;
+    // 出品シート以外の処理
+    if (sheetName !== '出品') {
+      // 状態テンプレのプルダウン選択時
+      // ※ 状態テンプレシートは出品シートにバインドされているため
+      // 出品シートの状態テンプレ列の変更を検知
+      // → handleEdit内で出品シートの処理として対応済み
+      return;
+    }
 
     // ヘッダー行（1-4行目）は無視
     if (row <= 4) return;
@@ -346,6 +355,26 @@ function handleEdit(e) {
     if (specUrlCol && col === specUrlCol) {
       const specUrl = String(e.value !== undefined ? e.value : (range.getValue() || '')).trim();
       if (specUrl) handleSpecUrlChangedInListing(sheet, row, headerMapping, specUrl);
+      return;
+    }
+
+    // 状態テンプレ列（状態テンプレ）の変更
+    const conditionTemplateCol = headerMapping['状態テンプレ'];
+    if (conditionTemplateCol && col === conditionTemplateCol) {
+      const selectedCondition = String(e.value !== undefined ? e.value : range.getValue()).trim();
+      if (selectedCondition) {
+        _handleConditionTemplateChange(sheet, row, headerMapping, selectedCondition, spreadsheetId);
+      }
+      return;
+    }
+
+    // 発送業者列の変更
+    const shipperCol = headerMapping['発送業者'];
+    if (shipperCol && col === shipperCol) {
+      const selectedShipper = String(e.value !== undefined ? e.value : range.getValue()).trim();
+      if (selectedShipper) {
+        _handleShipperChange(sheet, row, headerMapping, selectedShipper, spreadsheetId);
+      }
       return;
     }
 
@@ -541,6 +570,169 @@ function authorizeScript() {
   } catch (error) {
     ui.alert('エラー', '❌ 権限承認中にエラーが発生しました:\n' + error.toString(), ui.ButtonSet.OK);
     Logger.log('❌ authorizeScript エラー: ' + error.toString());
+  }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// eBay OAuth 初回認証メニュー
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/**
+ * 【⚙️ → OAuth認証URL生成】
+ *
+ * ツール設定シートの App ID / RuName を読んで認証URLを生成し、
+ * モーダルダイアログに表示する。URLをコピーしてブラウザで開くよう案内する。
+ */
+function menuOAuthGenerateUrl() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    const config = _getListingToolConfig_();
+    const appId  = String(config['App ID']  || '').trim();
+    const ruName = String(config['RuName']  || '').trim();
+
+    if (!appId)  throw new Error('ツール設定に App ID が設定されていません');
+    if (!ruName) throw new Error('ツール設定に RuName が設定されていません');
+
+    const scopes = [
+      'https://api.ebay.com/oauth/api_scope',
+      'https://api.ebay.com/oauth/api_scope/sell.account',
+      'https://api.ebay.com/oauth/api_scope/sell.inventory',
+      'https://api.ebay.com/oauth/api_scope/sell.fulfillment',
+      'https://api.ebay.com/oauth/api_scope/sell.marketing',
+      'https://api.ebay.com/oauth/api_scope/sell.analytics.readonly',
+      'https://api.ebay.com/oauth/api_scope/sell.finances'
+    ].join(' ');
+
+    const authUrl = 'https://auth.ebay.com/oauth2/authorize?' +
+      'client_id='     + encodeURIComponent(appId)  +
+      '&response_type=code' +
+      '&redirect_uri=' + encodeURIComponent(ruName) +
+      '&scope='        + encodeURIComponent(scopes);
+
+    const html = HtmlService.createHtmlOutput(
+      '<p style="font-size:13px">以下のURLをブラウザで開いてeBayにサインインしてください。</p>' +
+      '<textarea style="width:100%;height:80px;font-size:11px" onclick="this.select()">' + authUrl + '</textarea>' +
+      '<p style="font-size:12px;color:#555">' +
+      'サインイン後のリダイレクトURLに含まれる <code>code=</code> の値をコピーし、<br>' +
+      '⚙️ → <strong>認証コードでトークン取得</strong> から貼り付けてください。</p>'
+    ).setWidth(520).setHeight(210);
+    ui.showModalDialog(html, 'eBay OAuth 認証URL');
+
+  } catch (error) {
+    ui.alert('エラー', '❌ 認証URL生成に失敗しました:\n' + error.toString(), ui.ButtonSet.OK);
+    Logger.log('❌ menuOAuthGenerateUrl エラー: ' + error.toString());
+  }
+}
+
+/**
+ * 【⚙️ → 認証コードでトークン取得】
+ *
+ * ブラウザのリダイレクトURLから取得した認証コードを入力してもらい、
+ * Access Token / Refresh Token を取得してツール設定シートに保存する。
+ */
+function menuOAuthExchangeCode() {
+  const ui = SpreadsheetApp.getUi();
+
+  const prompt = ui.prompt(
+    'eBay 認証コード入力',
+    'ブラウザのリダイレクトURLに含まれる code=XXX の値を貼り付けてください:',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (prompt.getSelectedButton() !== ui.Button.OK) return;
+
+  const code = prompt.getResponseText().trim();
+  if (!code) {
+    ui.alert('エラー', '認証コードが入力されていません。', ui.ButtonSet.OK);
+    return;
+  }
+
+  try {
+    const config  = _getListingToolConfig_();
+    const appId   = String(config['App ID']  || '').trim();
+    const certId  = String(config['Cert ID'] || '').trim();
+    const ruName  = String(config['RuName']  || '').trim();
+
+    if (!appId || !certId) throw new Error('ツール設定に App ID / Cert ID が設定されていません');
+    if (!ruName)           throw new Error('ツール設定に RuName が設定されていません');
+
+    const credentials = Utilities.base64Encode(appId + ':' + certId);
+    const payloadStr  =
+      'grant_type=authorization_code' +
+      '&code='         + code   +
+      '&redirect_uri=' + ruName;
+
+    const response = UrlFetchApp.fetch('https://api.ebay.com/identity/v1/oauth2/token', {
+      method:  'post',
+      headers: {
+        'Content-Type':  'application/x-www-form-urlencoded',
+        'Authorization': 'Basic ' + credentials
+      },
+      payload:           payloadStr,
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() !== 200) {
+      throw new Error('トークン取得失敗（HTTP ' + response.getResponseCode() + '）:\n' +
+                      response.getContentText().substring(0, 300));
+    }
+
+    const result = JSON.parse(response.getContentText());
+    _saveOAuthTokensToSheet_(result.access_token, result.refresh_token,
+                              result.expires_in, result.refresh_token_expires_in);
+
+    ui.alert(
+      'トークン取得完了',
+      '✅ Access Token / Refresh Token をツール設定シートに保存しました。\n\n' +
+      'Access Token 有効期限: 約 ' + Math.floor(result.expires_in / 60) + ' 分\n' +
+      'Refresh Token 有効期限: 約18ヶ月',
+      ui.ButtonSet.OK
+    );
+    Logger.log('✅ menuOAuthExchangeCode 完了');
+
+  } catch (error) {
+    ui.alert('エラー', '❌ トークン取得に失敗しました:\n' + error.toString(), ui.ButtonSet.OK);
+    Logger.log('❌ menuOAuthExchangeCode エラー: ' + error.toString());
+  }
+}
+
+/**
+ * ツール設定シートに Access Token / Refresh Token を保存する（container 専用）
+ * A列のキー名で行を探して B列の値を上書きする。
+ *
+ * @param {string} accessToken
+ * @param {string} refreshToken
+ * @param {number} expiresIn           Access Token 有効期限（秒）
+ * @param {number} refreshTokenExpiresIn Refresh Token 有効期限（秒）
+ */
+function _saveOAuthTokensToSheet_(accessToken, refreshToken, expiresIn, refreshTokenExpiresIn) {
+  const ss            = SpreadsheetApp.getActiveSpreadsheet();
+  const settingsSheet = ss.getSheetByName('ツール設定');
+  if (!settingsSheet) throw new Error('ツール設定シートが見つかりません');
+
+  const data     = settingsSheet.getDataRange().getValues();
+  const headers  = data[0];
+  const itemIdx  = headers.indexOf('項目');
+  const valueIdx = headers.indexOf('値');
+  if (itemIdx === -1 || valueIdx === -1) throw new Error('ツール設定シートに「項目」「値」列が見つかりません');
+
+  const accessExpiry  = new Date(Date.now() + expiresIn * 1000);
+  const refreshExpiry = refreshTokenExpiresIn
+    ? new Date(Date.now() + refreshTokenExpiresIn * 1000)
+    : null;
+
+  const writeMap = {
+    'User Token':           accessToken,
+    'Refresh Token':        refreshToken,
+    'Token Expiry':         accessExpiry.toISOString(),
+    'Refresh Token Expiry': refreshExpiry ? refreshExpiry.toISOString() : ''
+  };
+
+  for (let i = 1; i < data.length; i++) {
+    const key = String(data[i][itemIdx] || '').trim();
+    if (writeMap.hasOwnProperty(key)) {
+      settingsSheet.getRange(i + 1, valueIdx + 1).setValue(writeMap[key]);
+      Logger.log('✅ ' + key + ' を更新しました');
+    }
   }
 }
 
@@ -1335,6 +1527,147 @@ function menuUpdateKanriYmDropdown() {
     }
   } catch(e) {
     ui.alert('❌ エラー', e.toString(), ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * 状態テンプレ列変更時：状態_テンプレシートからテンプレートを取得して状態説明列に出力
+ */
+function _handleConditionTemplateChange(sheet, row, headerMapping, selectedCondition, spreadsheetId) {
+  try {
+    Logger.log('状態テンプレ変更: ' + selectedCondition);
+
+    // 状態_テンプレシートを取得
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const templateSheet = ss.getSheetByName('状態_テンプレ');
+    if (!templateSheet) {
+      Logger.log('⚠️ 状態_テンプレシートが見つかりません');
+      return;
+    }
+
+    // ヘッダーマッピング
+    const lastCol = templateSheet.getLastColumn();
+    const lastRow = templateSheet.getLastRow();
+    if (lastRow < 2) return;
+
+    const headers = templateSheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    const conditionIdx = headers.findIndex(function(h) {
+      return String(h || '').trim() === 'コンディション';
+    });
+    const templateIdx = headers.findIndex(function(h) {
+      return String(h || '').trim() === 'テンプレート(英語)';
+    });
+
+    if (conditionIdx === -1 || templateIdx === -1) {
+      Logger.log('⚠️ 状態_テンプレシートに「コンディション」または「テンプレート(英語)」列が見つかりません');
+      return;
+    }
+
+    // 選択されたコンディションに対応するテンプレートを検索
+    const data = templateSheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    let templateText = '';
+    for (let i = 0; i < data.length; i++) {
+      const condition = String(data[i][conditionIdx] || '').trim();
+      if (condition === selectedCondition) {
+        templateText = String(data[i][templateIdx] || '').trim();
+        break;
+      }
+    }
+
+    if (!templateText) {
+      Logger.log('⚠️ 「' + selectedCondition + '」のテンプレートが見つかりません');
+      return;
+    }
+
+    // 状態説明列に出力
+    const conditionDescCol = headerMapping['状態説明'];
+    if (!conditionDescCol) {
+      Logger.log('⚠️ 「状態説明」列が見つかりません');
+      return;
+    }
+
+    sheet.getRange(row, conditionDescCol).setValue(templateText);
+    Logger.log('✅ 状態説明を更新: ' + templateText.substring(0, 50) + '...');
+
+  } catch(e) {
+    Logger.log('_handleConditionTemplateChange エラー: ' + e.toString());
+  }
+}
+
+/**
+ * 発送業者列変更時：プルダウン管理シートから発送方法リストを取得して発送方法列にプルダウン展開
+ */
+function _handleShipperChange(sheet, row, headerMapping, selectedShipper, spreadsheetId) {
+  try {
+    Logger.log('発送業者変更: ' + selectedShipper);
+
+    // プルダウン管理シートを取得
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const pulldownSheet = ss.getSheetByName('プルダウン管理');
+    if (!pulldownSheet) {
+      Logger.log('⚠️ プルダウン管理シートが見つかりません');
+      return;
+    }
+
+    // ヘッダー行から発送業者名の列を特定
+    const lastCol = pulldownSheet.getLastColumn();
+    const lastRow = pulldownSheet.getLastRow();
+    if (lastRow < 2) return;
+
+    const headers = pulldownSheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    const shipperColIdx = headers.findIndex(function(h) {
+      return String(h || '').trim() === selectedShipper;
+    });
+
+    if (shipperColIdx === -1) {
+      Logger.log('⚠️ プルダウン管理シートに「' + selectedShipper + '」列が見つかりません');
+      return;
+    }
+
+    // 選択された業者列から発送方法リストを取得（2行目以降・空白スキップ）
+    const methodValues = pulldownSheet.getRange(2, shipperColIdx + 1, lastRow - 1, 1).getValues();
+    const methodList = methodValues
+      .map(function(r) { return String(r[0] || '').trim(); })
+      .filter(function(v) { return v !== ''; });
+
+    if (methodList.length === 0) {
+      Logger.log('⚠️ 「' + selectedShipper + '」の発送方法リストが空です');
+      return;
+    }
+
+    Logger.log('発送方法リスト: ' + methodList.join(', '));
+
+    // 発送方法列にプルダウンを設定
+    const shippingMethodCol = headerMapping['発送方法'];
+    if (!shippingMethodCol) {
+      Logger.log('⚠️ 「発送方法」列が見つかりません');
+      return;
+    }
+
+    const rule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(methodList, true)
+      .setAllowInvalid(false)
+      .build();
+
+    const methodCell = sheet.getRange(row, shippingMethodCol);
+    methodCell.setDataValidation(rule);
+
+    // 現在の発送方法が新しいリストにない場合はクリア
+    const currentMethod = String(methodCell.getValue() || '').trim();
+    if (currentMethod && methodList.indexOf(currentMethod) === -1) {
+      methodCell.clearContent();
+      Logger.log('発送方法をクリア（前の値が新リストにない）: ' + currentMethod);
+    }
+
+    // リストの最初の値を自動選択（現在値が空の場合）
+    if (!currentMethod) {
+      methodCell.setValue(methodList[0]);
+    }
+
+    Logger.log('✅ 発送方法プルダウンを更新: ' + methodList.length + '件');
+
+  } catch(e) {
+    Logger.log('_handleShipperChange エラー: ' + e.toString());
   }
 }
 
