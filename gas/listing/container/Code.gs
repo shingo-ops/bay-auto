@@ -378,15 +378,15 @@ function handleEdit(e) {
       return;
     }
 
-    // カテゴリID 列の変更かどうかを確認
+    // カテゴリID列の変更
     const categoryIdCol = EbayLib.getCategoryIdColumnNumber(spreadsheetId);
-
     if (categoryIdCol && col === categoryIdCol) {
       _handleCategoryIdChange(e, spreadsheetId, sheetName, row);
-    } else {
-      // 他の列は既存処理（タイトル文字数更新など）に委譲
-      EbayLib.processOnEdit(e, spreadsheetId);
+      return;
     }
+
+    // その他の列は既存処理（タイトル文字数更新・ワード判定など）に委譲
+    EbayLib.processOnEdit(e, spreadsheetId);
 
   } catch (error) {
     Logger.log('handleEdit エラー: ' + error.toString());
