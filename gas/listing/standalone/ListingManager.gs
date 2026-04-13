@@ -1356,6 +1356,7 @@ function transferToOutputDb(spreadsheetId, rowNumber, listingData, result) {
     const sourceSheet = getTargetSpreadsheet(spreadsheetId).getSheetByName(SHEET_NAMES.LISTING);
     const srcLastCol = sourceSheet.getLastColumn();
     const sourceValues = sourceSheet.getRange(rowNumber, 1, 1, srcLastCol).getValues()[0];
+    const sourceDisplayValues = sourceSheet.getRange(rowNumber, 1, 1, srcLastCol).getDisplayValues()[0];
     const sourceHeaderMapping = buildHeaderMapping(); // 出品シート: 列名 → 1-based index
 
     // 出品DBのヘッダー行（1行目）を取得し、不可視文字を除去
@@ -1374,7 +1375,8 @@ function transferToOutputDb(spreadsheetId, rowNumber, listingData, result) {
       if (!h) return;
       const srcIdx = sourceHeaderMapping[h];
       if (srcIdx) {
-        outputRow[i] = sourceValues[srcIdx - 1];
+        const rawVal = sourceValues[srcIdx - 1];
+        outputRow[i] = (rawVal instanceof Date) ? sourceDisplayValues[srcIdx - 1] : rawVal;
       }
     });
 
@@ -1962,7 +1964,7 @@ function testTransferToOutputDb() {
   }
 
   const listingData = sourceSheet.getRange(testRow, 1, 1, srcLastCol).getValues()[0];
-  const realItemId = String(sourceSheet.getRange(testRow, itemIdCol).getValue()).trim();
+  const realItemId = String(sourceSheet.getRange(testRow, itemIdCol).getDisplayValue()).trim();
 
   // 実際のItem IDで転記実行
   const realResult = {
