@@ -1199,21 +1199,48 @@ function menuExportSellstaCsv() {
   const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
   const ui = SpreadsheetApp.getUi();
 
-  const response = ui.alert(
+  const confirm = ui.alert(
     'セルスタCSV出力',
-    '出品DBの全データを「セルスタCSV」シートに出力します。\n実行しますか？',
+    '条件: 出品ステータス=Active、出品URLあり、CSV列が空\n\n対象行をセルスタ_CSVシートに出力してダウンロードします。\n実行しますか？',
     ui.ButtonSet.OK_CANCEL
   );
-  if (response !== ui.Button.OK) return;
+  if (confirm !== ui.Button.OK) return;
 
   try {
     const result = EbayLib.exportSellstaCsv(spreadsheetId);
-    if (result.success) {
-      ui.alert('✅ 出力完了', result.message, ui.ButtonSet.OK);
-    } else {
+
+    if (!result.success) {
       ui.alert('❌ エラー', result.message, ui.ButtonSet.OK);
+      return;
     }
+
+    // ダウンロードダイアログを表示（自動ダウンロード）
+    const html = HtmlService.createHtmlOutput(
+      '<html><body>' +
+      '<p style="font-family:sans-serif; font-size:14px;">✅ ' + result.message + '</p>' +
+      '<p style="font-family:sans-serif; font-size:12px;">ダウンロードを開始しています...</p>' +
+      '<script>' +
+      '  window.open("' + result.downloadUrl + '", "_blank");' +
+      '  setTimeout(function() {' +
+      '    google.script.run.withSuccessHandler(function() {' +
+      '      google.script.host.close();' +
+      '    }).menuClearSellstaCsvSheet();' +
+      '  }, 3000);' +
+      '</script>' +
+      '</body></html>'
+    ).setTitle('CSVダウンロード').setWidth(400).setHeight(120);
+
+    SpreadsheetApp.getUi().showModalDialog(html, 'CSVダウンロード');
+
   } catch (e) {
     ui.alert('❌ エラー', e.toString(), ui.ButtonSet.OK);
   }
+}
+
+/**
+ * ダウンロード完了後のシートクリア（HTMLから呼び出す）
+ */
+function menuClearSellstaCsvSheet() {
+  const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+  EbayLib.clearSellstaCsvSheet(spreadsheetId);
 }

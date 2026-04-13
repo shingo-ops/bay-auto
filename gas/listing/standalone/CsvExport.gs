@@ -3,16 +3,30 @@
  * container/Code.gs の EbayLib.exportSellstaCsv() から呼び出す
  */
 
+// セルスタCSVの必須ヘッダー定義
+const SELLSTA_CSV_HEADERS = [
+  'action', 'ebay_item_id', 'Item title',
+  'image_url1','image_url2','image_url3','image_url4','image_url5','image_url6',
+  'image_url7','image_url8','image_url9','image_url10','image_url11','image_url12',
+  'image_url13','image_url14','image_url15','image_url16','image_url17','image_url18',
+  'image_url19','image_url20','image_url21','image_url22','image_url23','image_url24',
+  '①仕入先情報','②仕入先情報','③仕入先情報',
+  'Custom label (SKU)','Condition','Condition description',
+  'Item Code type','Item Code','CategoryID','Item Specifics',
+  'ListingType','Duration','Selling Price',
+  'Best Offers（accept offers of at least）','Best Offers（decline offers lower than）',
+  'Quantity','Store Category','Shipping Policy','Payment Policy','Return Policy',
+  'Private Listing','Description','listing_date','Memo','Custom Link'
+];
+
 /**
- * 出品DBからセルスタ形式CSVデータを生成してスプレッドシートに出力
- *
+ * セルスタCSV出力メイン処理
  * @param {string} spreadsheetId 出品スプレッドシートID
- * @returns {{ success: boolean, message: string, rowCount: number }}
+ * @returns {{ success: boolean, message: string, downloadUrl: string, fileName: string }}
  */
 function exportSellstaCsv(spreadsheetId) {
   try {
     Logger.log('=== セルスタCSV出力開始 ===');
-
     if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
 
     // 出品DBを開く
@@ -21,136 +35,171 @@ function exportSellstaCsv(spreadsheetId) {
     if (!outputDbId) {
       return { success: false, message: '出品DBが設定されていません。ツール設定を確認してください。' };
     }
-
-    const outputSS = SpreadsheetApp.openById(outputDbId);
+    const outputSS    = SpreadsheetApp.openById(outputDbId);
     const outputSheet = outputSS.getSheetByName('出品');
     if (!outputSheet) {
       return { success: false, message: '出品DBに「出品」シートが見つかりません。' };
     }
 
+    // 出品DBのヘッダーマッピング
     const lastCol = outputSheet.getLastColumn();
     const lastRow = outputSheet.getLastRow();
+    const dbHeaderRow = outputSheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    const dbMap = {};
+    dbHeaderRow.forEach(function(h, i) { if (h) dbMap[String(h).trim()] = i; });
+
+    // 必須列の存在チェック
+    const requiredDbCols = ['出品ステータス', '出品URL', 'CSV', 'Item ID', 'タイトル',
+      'カテゴリID', '状態', '売値($)', '個数', 'Shipping Policy', 'Payment Policy', 'Return Policy'];
+    const missingDbCols = requiredDbCols.filter(function(c) { return dbMap[c] === undefined; });
+    if (missingDbCols.length > 0) {
+      return { success: false, message: '出品DBに以下の列が見つかりません:\n' + missingDbCols.join('\n') };
+    }
+
+    // セルスタ_CSVシートのヘッダーチェック
+    const csvSheet = outputSS.getSheetByName('セルスタ_CSV');
+    if (!csvSheet) {
+      return { success: false, message: '出品DBに「セルスタ_CSV」シートが見つかりません。' };
+    }
+    const csvLastCol   = csvSheet.getLastColumn();
+    const csvHeaderRow = csvSheet.getRange(1, 1, 1, Math.max(csvLastCol, 1)).getValues()[0];
+    const csvMap       = {};
+    csvHeaderRow.forEach(function(h, i) { if (h) csvMap[String(h).trim()] = i + 1; }); // 1-based
+
+    // セルスタ_CSVシートの必須ヘッダー存在チェック
+    const missingCsvHeaders = SELLSTA_CSV_HEADERS.filter(function(h) { return csvMap[h] === undefined; });
+    if (missingCsvHeaders.length > 0) {
+      return {
+        success: false,
+        message: '「セルスタ_CSV」シートに以下のヘッダーが見つかりません:\n' + missingCsvHeaders.join('\n')
+      };
+    }
+    Logger.log('ヘッダーチェック完了');
+
+    // データ行を全取得（5行目以降）
     if (lastRow < 5) {
       return { success: false, message: '出品DBにデータがありません（5行目以降にデータが必要）。' };
     }
-
-    // ヘッダーマッピング作成
-    const headerRow = outputSheet.getRange(1, 1, 1, lastCol).getValues()[0];
-    const dbMap = {};
-    headerRow.forEach(function(h, i) {
-      if (h) dbMap[String(h).trim()] = i;
-    });
-
-    // データ行（5行目以降）を全取得
     const dataValues  = outputSheet.getRange(5, 1, lastRow - 4, lastCol).getValues();
     const dataDisplay = outputSheet.getRange(5, 1, lastRow - 4, lastCol).getDisplayValues();
 
     // Conditionマッピングを構築
     const conditionMap = buildConditionMap(spreadsheetId);
 
-    // CSVヘッダー定義
-    const csvHeaders = [
-      'action', 'ebay_item_id', 'Item title',
-      'image_url1','image_url2','image_url3','image_url4','image_url5','image_url6',
-      'image_url7','image_url8','image_url9','image_url10','image_url11','image_url12',
-      'image_url13','image_url14','image_url15','image_url16','image_url17','image_url18',
-      'image_url19','image_url20','image_url21','image_url22','image_url23','image_url24',
-      '①仕入先情報','②仕入先情報','③仕入先情報',
-      'Custom label (SKU)','Condition','Condition description',
-      'Item Code type','Item Code','CategoryID','Item Specifics',
-      'ListingType','Duration','Selling Price',
-      'Best Offers（accept offers of at least）','Best Offers（decline offers lower than）',
-      'Quantity','Store Category','Shipping Policy','Payment Policy','Return Policy',
-      'Private Listing','Description','listing_date','Memo','Custom Link'
-    ];
+    // フィルタ: 出品ステータス=Active & 出品URL≠空 & CSV=空
+    const statusIdx = dbMap['出品ステータス'];
+    const urlIdx    = dbMap['出品URL'];
+    const csvIdx    = dbMap['CSV'];
 
-    const csvRows = [csvHeaders];
-
-    // データ行を変換
-    dataValues.forEach(function(row, rowIdx) {
-      const disp = dataDisplay[rowIdx];
-
-      // Item IDが空の行はスキップ
-      const itemId = getCellDisplay(disp, dbMap, 'Item ID');
-      if (!itemId || !itemId.trim()) return;
-
-      // 画像URLを空白を詰めてimage_url1〜24に配置
-      const imageUrls = buildImageUrls(disp, dbMap);
-
-      // Item Specificsを結合
-      const itemSpecifics = buildItemSpecifics(disp, dbMap);
-
-      // Condition逆引き
-      const categoryId = getCellDisplay(disp, dbMap, 'カテゴリID');
-      const conditionJa = getCellDisplay(disp, dbMap, '状態');
-      const conditionId = resolveConditionId(categoryId, conditionJa, conditionMap);
-
-      // Item Code（UPC→EAN→MPN優先）
-      const itemCodeResult = resolveItemCode(disp, dbMap);
-
-      // タイムスタンプ変換
-      const listingDate = convertTimestamp(getCellDisplay(disp, dbMap, '出品タイムスタンプ'));
-
-      const csvRow = [
-        'Revise',
-        itemId.trim(),
-        getCellDisplay(disp, dbMap, 'タイトル'),
-      ].concat(imageUrls).concat([
-        getCellDisplay(disp, dbMap, '仕入元URL①'),       // ① 仕入先情報
-        getCellDisplay(disp, dbMap, '仕入元URL②'),       // ② 仕入先情報
-        getCellDisplay(disp, dbMap, '仕入元URL③'),       // ③ 仕入先情報
-        getCellDisplay(disp, dbMap, '仕入れキーワード'), // Custom label (SKU)
-        conditionId,                                      // Condition
-        getCellDisplay(disp, dbMap, '状態説明'),         // Condition description
-        itemCodeResult.type,                              // Item Code type
-        itemCodeResult.code,                              // Item Code
-        categoryId,                                       // CategoryID
-        itemSpecifics,                                    // Item Specifics
-        'fixed_price',                                    // ListingType
-        'gtc',                                            // Duration
-        getCellDisplay(disp, dbMap, '売値($)'),          // Selling Price
-        getCellDisplay(disp, dbMap, '承認価格'),         // Best Offers accept
-        getCellDisplay(disp, dbMap, '拒否価格'),         // Best Offers decline
-        getCellDisplay(disp, dbMap, '個数'),             // Quantity
-        '1',                                              // Store Category
-        getCellDisplay(disp, dbMap, 'Shipping Policy'),  // Shipping Policy
-        getCellDisplay(disp, dbMap, 'Payment Policy'),   // Payment Policy
-        getCellDisplay(disp, dbMap, 'Return Policy'),    // Return Policy
-        'TRUE',                                           // Private Listing
-        getCellDisplay(disp, dbMap, 'Description'),      // Description
-        listingDate,                                      // listing_date
-        getCellDisplay(disp, dbMap, 'メモ'),             // Memo
-        getCellDisplay(disp, dbMap, '検索URL')           // Custom Link
-      ]);
-
-      csvRows.push(csvRow);
+    const targetRows = []; // { rowIndex: (5始まりの実際の行番号), disp: [] }
+    dataValues.forEach(function(row, i) {
+      const status = String(row[statusIdx] || '').trim();
+      const url    = String(row[urlIdx]    || '').trim();
+      const csv    = String(row[csvIdx]    || '').trim();
+      if (status === 'Active' && url !== '' && csv === '') {
+        targetRows.push({ rowIndex: i + 5, disp: dataDisplay[i] });
+      }
     });
 
-    Logger.log('変換完了: ' + (csvRows.length - 1) + '件');
-
-    // 出力先シートを準備（出品スプレッドシートに「セルスタCSV」シートを作成）
-    const sourceSS = getTargetSpreadsheet(spreadsheetId);
-    let csvSheet = sourceSS.getSheetByName('セルスタCSV');
-    if (csvSheet) {
-      csvSheet.clearContents();
-    } else {
-      csvSheet = sourceSS.insertSheet('セルスタCSV');
+    Logger.log('対象行数: ' + targetRows.length + '件');
+    if (targetRows.length === 0) {
+      return { success: false, message: '出力対象のデータがありません。\n条件: 出品ステータス=Active、出品URLあり、CSV列が空' };
     }
 
-    // シートに書き込み
-    csvSheet.getRange(1, 1, csvRows.length, csvHeaders.length).setValues(csvRows);
+    // セルスタ_CSVシートの既存データの最終行を取得（追記位置）
+    const csvSheetLastRow = csvSheet.getLastRow();
+    let writeRow = csvSheetLastRow < 1 ? 2 : csvSheetLastRow + 1;
+    // 1行目はヘッダーなので最低2行目から
+    if (writeRow < 2) writeRow = 2;
 
-    // ヘッダー行を太字・背景色で見やすく
-    csvSheet.getRange(1, 1, 1, csvHeaders.length)
-      .setFontWeight('bold')
-      .setBackground('#D5E8F0');
+    // 各対象行を変換してシートに追記
+    const now     = new Date();
+    const csvMark = 'セルスタ/' + formatTimestampForCsv(now);
+    const writtenDbRows = []; // CSV列を更新する行番号リスト
 
-    Logger.log('✅ セルスタCSVシート出力完了: ' + (csvRows.length - 1) + '件');
+    targetRows.forEach(function(target) {
+      const disp = target.disp;
+
+      // 各フィールドを変換
+      const imageUrls     = buildImageUrls(disp, dbMap);
+      const itemSpecifics = buildItemSpecifics(disp, dbMap);
+      const categoryId    = getCellDisplay(disp, dbMap, 'カテゴリID');
+      const conditionJa   = getCellDisplay(disp, dbMap, '状態');
+      const conditionId   = resolveConditionId(categoryId, conditionJa, conditionMap);
+      const itemCode      = resolveItemCode(disp, dbMap);
+      const listingDate   = convertTimestamp(getCellDisplay(disp, dbMap, '出品タイムスタンプ'));
+
+      // セルスタ_CSV形式の行データを組み立て（ヘッダー名→列番号でセット）
+      const rowData = {};
+      rowData['action']           = 'Revise';
+      rowData['ebay_item_id']     = getCellDisplay(disp, dbMap, 'Item ID');
+      rowData['Item title']       = getCellDisplay(disp, dbMap, 'タイトル');
+      imageUrls.forEach(function(url, i) {
+        rowData['image_url' + (i + 1)] = url;
+      });
+      rowData['①仕入先情報']      = getCellDisplay(disp, dbMap, '仕入元URL①');
+      rowData['②仕入先情報']      = getCellDisplay(disp, dbMap, '仕入元URL②');
+      rowData['③仕入先情報']      = getCellDisplay(disp, dbMap, '仕入元URL③');
+      rowData['Custom label (SKU)'] = getCellDisplay(disp, dbMap, '仕入れキーワード');
+      rowData['Condition']         = conditionId;
+      rowData['Condition description'] = getCellDisplay(disp, dbMap, '状態説明');
+      rowData['Item Code type']    = itemCode.type;
+      rowData['Item Code']         = itemCode.code;
+      rowData['CategoryID']        = categoryId;
+      rowData['Item Specifics']    = itemSpecifics;
+      rowData['ListingType']       = 'fixed_price';
+      rowData['Duration']          = 'gtc';
+      rowData['Selling Price']     = getCellDisplay(disp, dbMap, '売値($)');
+      rowData['Best Offers（accept offers of at least）'] = getCellDisplay(disp, dbMap, '承認価格');
+      rowData['Best Offers（decline offers lower than）'] = getCellDisplay(disp, dbMap, '拒否価格');
+      rowData['Quantity']          = getCellDisplay(disp, dbMap, '個数');
+      rowData['Store Category']    = '1';
+      rowData['Shipping Policy']   = getCellDisplay(disp, dbMap, 'Shipping Policy');
+      rowData['Payment Policy']    = getCellDisplay(disp, dbMap, 'Payment Policy');
+      rowData['Return Policy']     = getCellDisplay(disp, dbMap, 'Return Policy');
+      rowData['Private Listing']   = 'TRUE';
+      rowData['Description']       = getCellDisplay(disp, dbMap, 'Description');
+      rowData['listing_date']      = listingDate;
+      rowData['Memo']              = getCellDisplay(disp, dbMap, 'メモ');
+      rowData['Custom Link']       = getCellDisplay(disp, dbMap, '検索URL');
+
+      // csvMapを使ってシートの正しい列に書き込む
+      SELLSTA_CSV_HEADERS.forEach(function(header) {
+        const colNum = csvMap[header];
+        if (!colNum) return;
+        const val = rowData[header] !== undefined ? rowData[header] : '';
+        csvSheet.getRange(writeRow, colNum).setValue(val);
+      });
+
+      writtenDbRows.push(target.rowIndex);
+      writeRow++;
+    });
+
+    Logger.log('セルスタ_CSVシート書き込み完了: ' + writtenDbRows.length + '件');
+
+    // 出品DBのCSV列にタイムスタンプを書き込む
+    writtenDbRows.forEach(function(rowNum) {
+      outputSheet.getRange(rowNum, csvIdx + 1).setValue(csvMark);
+    });
+    Logger.log('CSV列更新完了: ' + csvMark);
+
+    // GoogleドライブにCSVバックアップを保存
+    const csvContent  = buildCsvContent(csvSheet);
+    const fileName    = 'sellsta_' + formatDateForFilename(now) + '.csv';
+    const folder      = getOrCreateBackupFolder();
+    const bom         = '\uFEFF';
+    const blob        = Utilities.newBlob(bom + csvContent, 'text/csv', fileName);
+    const file        = folder.createFile(blob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    const downloadUrl = 'https://drive.google.com/uc?export=download&id=' + file.getId();
+
+    Logger.log('✅ バックアップ保存完了: ' + downloadUrl);
 
     return {
-      success: true,
-      message: (csvRows.length - 1) + '件のデータを「セルスタCSV」シートに出力しました。',
-      rowCount: csvRows.length - 1
+      success:     true,
+      message:     writtenDbRows.length + '件のデータを出力しました。',
+      downloadUrl: downloadUrl,
+      fileName:    fileName
     };
 
   } catch (e) {
@@ -162,8 +211,84 @@ function exportSellstaCsv(spreadsheetId) {
 }
 
 /**
- * セルの表示値を取得
+ * ダウンロード完了後にセルスタ_CSVシートをクリア（ヘッダー行は保持）
+ * container/Code.gs から呼び出す
  */
+function clearSellstaCsvSheet(spreadsheetId) {
+  try {
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+    const config   = getEbayConfig();
+    const outputSS = SpreadsheetApp.openById(config.outputDbSpreadsheetId);
+    const csvSheet = outputSS.getSheetByName('セルスタ_CSV');
+    if (!csvSheet) return;
+    const lastRow = csvSheet.getLastRow();
+    if (lastRow > 1) {
+      csvSheet.getRange(2, 1, lastRow - 1, csvSheet.getLastColumn()).clearContent();
+    }
+    Logger.log('✅ セルスタ_CSVシートクリア完了');
+  } catch (e) {
+    Logger.log('⚠️ クリアエラー: ' + e.toString());
+  } finally {
+    CURRENT_SPREADSHEET_ID = null;
+  }
+}
+
+/**
+ * セルスタ_CSVシートの内容をCSV文字列に変換
+ */
+function buildCsvContent(csvSheet) {
+  const lastRow = csvSheet.getLastRow();
+  const lastCol = csvSheet.getLastColumn();
+  if (lastRow < 1) return '';
+  const values = csvSheet.getRange(1, 1, lastRow, lastCol).getValues();
+  return values.map(function(row) {
+    return row.map(function(cell) {
+      const val = String(cell === null || cell === undefined ? '' : cell);
+      if (val.indexOf(',') !== -1 || val.indexOf('\n') !== -1 || val.indexOf('"') !== -1) {
+        return '"' + val.replace(/"/g, '""') + '"';
+      }
+      return val;
+    }).join(',');
+  }).join('\n');
+}
+
+/**
+ * バックアップ用フォルダを取得または作成
+ */
+function getOrCreateBackupFolder() {
+  const folderName = 'セルスタCSVバックアップ';
+  const folders = DriveApp.getFoldersByName(folderName);
+  if (folders.hasNext()) return folders.next();
+  return DriveApp.createFolder(folderName);
+}
+
+/**
+ * CSV列用タイムスタンプ: "2026-04-13 9:21"
+ */
+function formatTimestampForCsv(date) {
+  const y   = date.getFullYear();
+  const m   = String(date.getMonth() + 1).padStart(2, '0');
+  const d   = String(date.getDate()).padStart(2, '0');
+  const h   = date.getHours(); // 先頭0なし
+  const min = String(date.getMinutes()).padStart(2, '0');
+  return y + '-' + m + '-' + d + ' ' + h + ':' + min;
+}
+
+/**
+ * ファイル名用日時: "20260413_122530"
+ */
+function formatDateForFilename(date) {
+  const y   = date.getFullYear();
+  const m   = String(date.getMonth() + 1).padStart(2, '0');
+  const d   = String(date.getDate()).padStart(2, '0');
+  const h   = String(date.getHours()).padStart(2, '0');
+  const min = String(date.getMinutes()).padStart(2, '0');
+  const s   = String(date.getSeconds()).padStart(2, '0');
+  return y + m + d + '_' + h + min + s;
+}
+
+// ===== 以下は前バージョンから継続のヘルパー関数 =====
+
 function getCellDisplay(disp, dbMap, colName) {
   const idx = dbMap[colName];
   if (idx === undefined) return '';
@@ -171,10 +296,6 @@ function getCellDisplay(disp, dbMap, colName) {
   return (val === null || val === undefined) ? '' : String(val);
 }
 
-/**
- * 画像URLを空白を詰めて最大24列に配置
- * 画像1〜23 → ストア画像 の順で走査し空白をスキップ
- */
 function buildImageUrls(disp, dbMap) {
   const urls = [];
   for (let i = 1; i <= 23; i++) {
@@ -183,15 +304,10 @@ function buildImageUrls(disp, dbMap) {
   }
   const storeUrl = getCellDisplay(disp, dbMap, 'ストア画像').trim();
   if (storeUrl) urls.push(storeUrl);
-
-  // 24列になるよう空文字で埋める
   while (urls.length < 24) urls.push('');
   return urls.slice(0, 24);
 }
 
-/**
- * Item Specificsを「項目名:内容,」形式で結合（空ペアはスキップ）
- */
 function buildItemSpecifics(disp, dbMap) {
   const parts = [];
   for (let i = 1; i <= 30; i++) {
@@ -202,9 +318,6 @@ function buildItemSpecifics(disp, dbMap) {
   return parts.join(',');
 }
 
-/**
- * Item Code（UPC→EAN→MPN優先）
- */
 function resolveItemCode(disp, dbMap) {
   const upc = getCellDisplay(disp, dbMap, 'UPC').trim();
   if (upc) return { type: 'upc', code: upc };
@@ -215,17 +328,14 @@ function resolveItemCode(disp, dbMap) {
   return { type: '', code: '' };
 }
 
-/**
- * カテゴリID→コンディション日本語→数値IDのマップを構築
- */
 function buildConditionMap(spreadsheetId) {
   try {
     if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
-    const ss = getTargetSpreadsheet(spreadsheetId);
+    const ss          = getTargetSpreadsheet(spreadsheetId);
+    const catCondMap  = {};
+    const condGroupMap = {};
 
-    // category_condition_map: カテゴリID → group_id
     const catCondSheet = ss.getSheetByName('category_condition_map');
-    const catCondMap = {};
     if (catCondSheet) {
       const data = catCondSheet.getDataRange().getValues();
       data.forEach(function(row, i) {
@@ -235,95 +345,50 @@ function buildConditionMap(spreadsheetId) {
         if (catId && grpId) catCondMap[catId] = grpId;
       });
     }
-    Logger.log('category_condition_map: ' + Object.keys(catCondMap).length + '件');
 
-    // condition_group_map: group_id → { ja: conditionId }
     const condGroupSheet = ss.getSheetByName('condition_group_map');
-    const condGroupMap = {};
     if (condGroupSheet) {
-      const data = condGroupSheet.getDataRange().getValues();
+      const data    = condGroupSheet.getDataRange().getValues();
       const headers = data[0].map(function(h) { return String(h).trim(); });
-      const groupIdIdx        = headers.indexOf('group_id');
-      const conditionsJsonIdx = headers.indexOf('conditions_json');
-
+      const grpIdx  = headers.indexOf('group_id');
+      const jsonIdx = headers.indexOf('conditions_json');
       data.forEach(function(row, i) {
         if (i === 0) return;
-        const grpId = String(row[groupIdIdx] || '').trim();
+        const grpId = String(row[grpIdx] || '').trim();
         if (!grpId) return;
         if (!condGroupMap[grpId]) condGroupMap[grpId] = {};
-        const json = String(row[conditionsJsonIdx] || '').trim();
-        if (json) {
-          try {
-            const conditions = JSON.parse(json);
-            conditions.forEach(function(c) {
-              if (c.ja && c.id) condGroupMap[grpId][c.ja] = String(c.id);
-            });
-          } catch (e) {
-            Logger.log('⚠️ conditions_json パースエラー: ' + e.toString());
-          }
-        }
+        try {
+          const conditions = JSON.parse(String(row[jsonIdx] || '').trim());
+          conditions.forEach(function(c) {
+            if (c.ja && c.id) condGroupMap[grpId][c.ja] = String(c.id);
+          });
+        } catch (e) {}
       });
     }
-    Logger.log('condition_group_map: ' + Object.keys(condGroupMap).length + 'グループ');
-
     return { catCondMap: catCondMap, condGroupMap: condGroupMap };
-
   } catch (e) {
-    Logger.log('buildConditionMap エラー: ' + e.toString());
     return { catCondMap: {}, condGroupMap: {} };
   }
 }
 
-/**
- * カテゴリID + 日本語コンディション → 数値IDに変換
- */
 function resolveConditionId(categoryId, conditionJa, conditionMap) {
   const catId = String(categoryId || '').trim();
   const ja    = String(conditionJa  || '').trim();
   if (!catId || !ja) return '';
-
-  const grpId = conditionMap.catCondMap[catId];
-  if (!grpId) {
-    Logger.log('⚠️ カテゴリID=' + catId + ' のグループが見つかりません');
-    return '';
-  }
-
+  const grpId   = conditionMap.catCondMap[catId];
+  if (!grpId)   return '';
   const grpData = conditionMap.condGroupMap[grpId];
-  if (!grpData) {
-    Logger.log('⚠️ グループID=' + grpId + ' のコンディションデータが見つかりません');
-    return '';
-  }
-
-  const condId = grpData[ja];
-  if (!condId) {
-    Logger.log('⚠️ 「' + ja + '」のconditionIdが見つかりません（グループ=' + grpId + '）');
-    return '';
-  }
-
-  Logger.log('Condition変換: ' + ja + ' → ' + condId + '（カテゴリ=' + catId + '）');
-  return condId;
+  if (!grpData) return '';
+  return grpData[ja] || '';
 }
 
-/**
- * タイムスタンプ変換
- * 入力: "2026/04/13/09:21:09" 形式
- * 出力: "2026-04-13 9:21" 形式
- */
 function convertTimestamp(ts) {
   if (!ts) return '';
   try {
-    // "2026/04/13/09:21:09" → 数字を抽出
     const match = ts.match(/(\d{4})\/(\d{2})\/(\d{2})[\/ ](\d{2}):(\d{2})/);
     if (match) {
-      const year  = match[1];
-      const month = match[2];
-      const day   = match[3];
-      const hour  = parseInt(match[4], 10); // 先頭0を除去
-      const min   = match[5];
-      return year + '-' + month + '-' + day + ' ' + hour + ':' + min;
+      return match[1] + '-' + match[2] + '-' + match[3] + ' ' + parseInt(match[4], 10) + ':' + match[5];
     }
     return ts;
-  } catch (e) {
-    return ts;
-  }
+  } catch (e) { return ts; }
 }
