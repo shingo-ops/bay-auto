@@ -372,6 +372,7 @@ function getEbayConfig() {
     ruName: config['RuName'] || '',
     categoryMasterSpreadsheetId: extractSpreadsheetId(config['カテゴリマスタ']) || '',
     outputDbSpreadsheetId: extractSpreadsheetId(config['出品DB']) || '',
+    listingSheetUrl: config['出品シート'] || '',
     csvBackupFolderId:     extractDriveFolderId(config['CSVデータフォルダ']) || '',
     itemLocation: config['出品所在地'] || 'Japan',
     postalCode:   config['郵便番号']   || '',
