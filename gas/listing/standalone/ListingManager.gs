@@ -100,10 +100,13 @@ function checkAndWriteWordJudgement(sheet, rowNumber, title, headerMapping, spre
       return titleLower.indexOf(w.toLowerCase()) !== -1;
     });
 
-    // 判定結果（禁止ワード優先）
+    // 判定結果（禁止ワード > 文字数オーバー > VERO > 該当なし）
+    const isTitleOver = title.length > 80;
     let result = '該当なし';
     if (hitKinshi.length > 0) {
       result = '禁止: ' + hitKinshi.join(', ');
+    } else if (isTitleOver) {
+      result = '文字数オーバー';
     } else if (hitVero.length > 0) {
       result = 'VERO: ' + hitVero.join(', ');
     }
