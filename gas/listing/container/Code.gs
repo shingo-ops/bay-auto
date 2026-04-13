@@ -124,7 +124,7 @@ function menuReviseItem() {
     return;
   }
 
-  const itemId = String(sheet.getRange(row, itemIdCol).getValue() || '').trim();
+  const itemId = String(sheet.getRange(row, itemIdCol).getDisplayValue() || '').trim();
   if (!itemId) {
     ui.alert('エラー', row + '行目の Item ID が空です。\n先に出品を実行してください。', ui.ButtonSet.OK);
     return;
@@ -180,7 +180,7 @@ function menuEndListing() {
     return;
   }
 
-  const itemId = String(sheet.getRange(row, itemIdCol).getValue() || '').trim();
+  const itemId = String(sheet.getRange(row, itemIdCol).getDisplayValue() || '').trim();
   if (!itemId) {
     ui.alert('エラー', row + '行目の Item ID が空です。', ui.ButtonSet.OK);
     return;
