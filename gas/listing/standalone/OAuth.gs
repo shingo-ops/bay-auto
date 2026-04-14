@@ -5,6 +5,69 @@
  */
 
 /**
+ * eBay APIアクセストークンを取得（Browse API用 client_credentials）
+ * USER_TOKEN → ScriptProperties キャッシュ → client_credentials の順にフォールバック
+ * container側の _getOAuthTokenForListing_() の置き換え用
+ *
+ * @param {string} spreadsheetId
+ * @returns {string} アクセストークン
+ */
+function getOAuthTokenForListing(spreadsheetId) {
+  const config = getListingToolConfig(spreadsheetId);
+
+  // USER_TOKEN が設定済みならそれを使用
+  const userToken = String(config['USER_TOKEN'] || '').trim();
+  if (userToken) {
+    Logger.log('[getOAuthTokenForListing] USER_TOKEN を使用');
+    return userToken;
+  }
+
+  // ScriptProperties のキャッシュを確認
+  const props        = PropertiesService.getScriptProperties();
+  const cachedToken  = props.getProperty('LISTING_EBAY_ACCESS_TOKEN');
+  const cachedExpiry = props.getProperty('LISTING_EBAY_TOKEN_EXPIRY');
+  if (cachedToken && cachedExpiry && Date.now() < Number(cachedExpiry)) {
+    Logger.log('[getOAuthTokenForListing] キャッシュトークンを使用');
+    return cachedToken;
+  }
+
+  // client_credentials でトークン取得
+  const appId  = String(config['App ID']  || '').trim();
+  const certId = String(config['Cert ID'] || '').trim();
+  if (!appId || !certId) {
+    throw new Error('ツール設定に App ID / Cert ID が設定されていません');
+  }
+
+  const credentials = Utilities.base64Encode(appId + ':' + certId);
+  const tokenResponse = UrlFetchApp.fetch('https://api.ebay.com/identity/v1/oauth2/token', {
+    method: 'post',
+    headers: {
+      'Authorization': 'Basic ' + credentials,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    payload: 'grant_type=client_credentials&scope=https%3A%2F%2Fapi.ebay.com%2Foauth%2Fapi_scope',
+    muteHttpExceptions: true
+  });
+
+  if (tokenResponse.getResponseCode() !== 200) {
+    throw new Error(
+      'eBay OAuthトークン取得失敗 (HTTP ' + tokenResponse.getResponseCode() + '): ' +
+      tokenResponse.getContentText().substring(0, 200)
+    );
+  }
+
+  const tokenResult = JSON.parse(tokenResponse.getContentText());
+  const token       = tokenResult.access_token;
+  const expiresIn   = tokenResult.expires_in || 7200;
+
+  props.setProperty('LISTING_EBAY_ACCESS_TOKEN', token);
+  props.setProperty('LISTING_EBAY_TOKEN_EXPIRY', String(Date.now() + expiresIn * 1000));
+
+  Logger.log('[getOAuthTokenForListing] 新規トークン取得完了（有効期限: ' + expiresIn + '秒）');
+  return token;
+}
+
+/**
  * アクセストークンを取得
  * @returns {string|null} アクセストークン
  */
