@@ -526,7 +526,15 @@ function _handleEndListing(e, sheet, headerMapping, row, spreadsheetId) {
     return;
   }
 
-  const result = EbayLib.endFixedPriceItem(spreadsheetId, itemId);
+  let result;
+  try {
+    result = EbayLib.endFixedPriceItem(spreadsheetId, itemId);
+  } catch(libErr) {
+    Logger.log('endFixedPriceItem エラー: ' + libErr.toString());
+    statusCell.setValue(e.oldValue || '出品中');
+    ui.alert('エラー', '❌ eBay接続エラー:\n' + libErr.toString(), ui.ButtonSet.OK);
+    return;
+  }
 
   if (result.success) {
     statusCell.setValue('出品終了');
@@ -580,7 +588,15 @@ function _handleOutOfStock(e, sheet, headerMapping, row, spreadsheetId) {
   }
 
   try {
-    const result = EbayLib.reviseQuantityToZero(spreadsheetId, row, itemId);
+    let result;
+    try {
+      result = EbayLib.reviseQuantityToZero(spreadsheetId, row, itemId);
+    } catch(libErr) {
+      Logger.log('reviseQuantityToZero エラー: ' + libErr.toString());
+      statusCell.setValue(e.oldValue || '出品中');
+      ui.alert('エラー', '❌ eBay接続エラー:\n' + libErr.toString(), ui.ButtonSet.OK);
+      return;
+    }
 
     if (result.success) {
       statusCell.setValue('在庫切れ');
