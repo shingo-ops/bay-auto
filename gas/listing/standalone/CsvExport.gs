@@ -190,7 +190,11 @@ function exportSellstaCsv(spreadsheetId) {
     const bom         = '\uFEFF';
     const blob        = Utilities.newBlob(bom + csvContent, 'text/csv', fileName);
     const file        = folder.createFile(blob);
-    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    try {
+      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    } catch(sharingErr) {
+      Logger.log('⚠️ 共有設定スキップ（権限不足）: ' + sharingErr.toString());
+    }
     const downloadUrl = 'https://drive.google.com/uc?export=download&id=' + file.getId();
 
     Logger.log('✅ バックアップ保存完了: ' + downloadUrl);
