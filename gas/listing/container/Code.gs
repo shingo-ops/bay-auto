@@ -442,7 +442,7 @@ function handleEdit(e) {
     if (conditionTemplateCol && col === conditionTemplateCol) {
       const selectedCondition = String(e.value !== undefined ? e.value : range.getValue()).trim();
       if (selectedCondition) {
-        _handleConditionTemplateChange(sheet, row, headerMapping, selectedCondition, spreadsheetId);
+        EbayLib.handleConditionTemplateChange(spreadsheetId, sheet.getName(), row, selectedCondition);
       }
       return;
     }
@@ -452,7 +452,7 @@ function handleEdit(e) {
     if (shipperCol && col === shipperCol) {
       const selectedShipper = String(e.value !== undefined ? e.value : range.getValue()).trim();
       if (selectedShipper) {
-        _handleShipperChange(sheet, row, headerMapping, selectedShipper, spreadsheetId);
+        EbayLib.handleShipperChange(spreadsheetId, sheet.getName(), row, selectedShipper);
       }
       return;
     }
@@ -958,498 +958,49 @@ function handleSpecUrlChangedInListing(sheet, row, headerMapping, specUrl) {
     'このURLからスペック情報を取得して Item Specifics に反映しますか？\n\n' + specUrl,
     ui.ButtonSet.YES_NO
   );
-
   if (response === ui.Button.YES) {
-    _fetchAndWriteSpecForListing(sheet, row, headerMapping, specUrl);
+    const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+    SpreadsheetApp.getActiveSpreadsheet().toast('スペック情報を取得中...', 'スペックURL', 8);
+    try {
+      const result = EbayLib.fetchAndWriteSpecForListing(spreadsheetId, sheet.getName(), row, specUrl, false);
+
+      if (result.categoryMismatch) {
+        const mismatchResponse = ui.alert(
+          'カテゴリ不一致',
+          '現在のカテゴリID: ' + result.currentCategoryId + '\n' +
+          '取得したカテゴリID: ' + result.fetchedCategoryId + ' (' + result.fetchedCategoryName + ')\n\n' +
+          '取得したカテゴリIDで上書きしますか？',
+          ui.ButtonSet.YES_NO
+        );
+        if (mismatchResponse === ui.Button.YES) {
+          const retryResult = EbayLib.fetchAndWriteSpecForListing(spreadsheetId, sheet.getName(), row, specUrl, true);
+          if (retryResult.success) {
+            SpreadsheetApp.getActiveSpreadsheet().toast(
+              'Item Specifics を設定しました（' + retryResult.filledCount + '件の値）',
+              '✅ スペック取得完了', 4
+            );
+          } else {
+            ui.alert('スペック取得エラー', '❌ ' + retryResult.message, ui.ButtonSet.OK);
+          }
+        } else {
+          const specUrlCol = headerMapping['スペックURL'];
+          if (specUrlCol) sheet.getRange(row, specUrlCol).clearContent();
+        }
+      } else if (result.success) {
+        SpreadsheetApp.getActiveSpreadsheet().toast(
+          'Item Specifics を設定しました（' + result.filledCount + '件の値）',
+          '✅ スペック取得完了', 4
+        );
+      } else {
+        ui.alert('スペック取得エラー', '❌ ' + result.message, ui.ButtonSet.OK);
+      }
+    } catch (e) {
+      ui.alert('スペック取得エラー', '❌ ' + e.toString(), ui.ButtonSet.OK);
+    }
   } else {
-    // NO → スペックURLをクリア
     const specUrlCol = headerMapping['スペックURL'];
     if (specUrlCol) sheet.getRange(row, specUrlCol).clearContent();
   }
-}
-
-/**
- * スペックURLから商品情報を取得して出品シートに書き込む
- *
- * @param {Sheet} sheet
- * @param {number} row
- * @param {Object} headerMapping
- * @param {string} specUrl
- */
-function _fetchAndWriteSpecForListing(sheet, row, headerMapping, specUrl) {
-  try {
-    SpreadsheetApp.getActiveSpreadsheet().toast('スペック情報を取得中...', 'スペックURL', 8);
-
-    // 1. Item ID を抽出
-    const itemId = _extractItemIdForListing(specUrl);
-    if (!itemId) {
-      SpreadsheetApp.getUi().alert(
-        'エラー',
-        '❌ URLから商品IDを抽出できませんでした:\n' + specUrl,
-        SpreadsheetApp.getUi().ButtonSet.OK
-      );
-      return;
-    }
-    Logger.log('[_fetchAndWriteSpecForListing] itemId=' + itemId);
-
-    // 2. eBay API で商品情報を取得
-    const item = _getItemForListing(itemId);
-
-    // 3. カテゴリ情報を抽出
-    const fetchedCategoryId   = _extractCategoryIdFromItem(item);
-    const fetchedCategoryName = _extractCategoryNameFromItem(item);
-    Logger.log('[_fetchAndWriteSpecForListing] fetched category: ' + fetchedCategoryId + ' / ' + fetchedCategoryName);
-
-    // 4. 現在のカテゴリIDと比較
-    const categoryIdCol   = headerMapping['カテゴリID'];
-    const categoryNameCol = headerMapping['カテゴリ'];
-    const currentCategoryId = categoryIdCol
-      ? String(sheet.getRange(row, categoryIdCol).getValue() || '').trim()
-      : '';
-
-    if (currentCategoryId && fetchedCategoryId && currentCategoryId !== fetchedCategoryId) {
-      const ui = SpreadsheetApp.getUi();
-      const mismatchResponse = ui.alert(
-        'カテゴリ不一致',
-        '現在のカテゴリID: ' + currentCategoryId + '\n' +
-        '取得したカテゴリID: ' + fetchedCategoryId + ' (' + fetchedCategoryName + ')\n\n' +
-        '取得したカテゴリIDで上書きしますか？',
-        ui.ButtonSet.YES_NO
-      );
-      if (mismatchResponse !== ui.Button.YES) {
-        // キャンセル → スペックURLもクリア
-        const specUrlCol = headerMapping['スペックURL'];
-        if (specUrlCol) sheet.getRange(row, specUrlCol).clearContent();
-        return;
-      }
-    }
-
-    // 5. カテゴリID / カテゴリ名を書き込み
-    if (fetchedCategoryId && categoryIdCol) {
-      sheet.getRange(row, categoryIdCol).setValue(fetchedCategoryId);
-    }
-    if (fetchedCategoryName && categoryNameCol) {
-      sheet.getRange(row, categoryNameCol).setValue(fetchedCategoryName);
-    }
-
-    // 6. アイテムスペシフィックスを抽出
-    const specifics = _extractItemSpecificsFromItem(item);
-    Logger.log('[_fetchAndWriteSpecForListing] specifics count=' + Object.keys(specifics).length);
-
-    // 7. カテゴリマスタデータを取得
-    const targetCategoryId = fetchedCategoryId || currentCategoryId;
-    const catData = targetCategoryId ? _getCategoryMasterDataForListing(targetCategoryId) : null;
-
-    // 8. スペックを優先度順にソート・充填
-    const sortedSpecs = _sortSpecsForListing(specifics, catData);
-
-    // 9. シートに書き込み
-    _writeSpecsToListingSheet(sheet, row, headerMapping, sortedSpecs, catData);
-
-    // 10. スペックURLをクリア（同一URL再入力でもトリガーが発火するよう）
-    const specUrlColForClear = headerMapping['スペックURL'];
-    if (specUrlColForClear) sheet.getRange(row, specUrlColForClear).clearContent();
-
-    const filledCount = sortedSpecs.filter(function(s) { return s.value && String(s.value).trim() !== ''; }).length;
-    SpreadsheetApp.getActiveSpreadsheet().toast(
-      'Item Specifics を設定しました（' + filledCount + '件の値）',
-      '✅ スペック取得完了',
-      4
-    );
-
-  } catch (err) {
-    Logger.log('[_fetchAndWriteSpecForListing] エラー: ' + err.toString());
-    SpreadsheetApp.getUi().alert(
-      'スペック取得エラー',
-      '❌ スペック情報の取得中にエラーが発生しました:\n' + err.toString(),
-      SpreadsheetApp.getUi().ButtonSet.OK
-    );
-  }
-}
-
-/**
- * eBay URLから商品IDを抽出
- * @param {string} url
- * @returns {string|null}
- */
-function _extractItemIdForListing(url) {
-  if (!url || typeof url !== 'string') return null;
-  const patterns = [
-    /\/itm\/(\d+)/,
-    /\/itm\/[^\/]+\/(\d+)/,
-    /item=(\d+)/
-  ];
-  for (let i = 0; i < patterns.length; i++) {
-    const m = url.match(patterns[i]);
-    if (m && m[1]) return m[1];
-  }
-  Logger.log('[_extractItemIdForListing] 商品ID抽出失敗: ' + url);
-  return null;
-}
-
-/**
- * eBay Browse API で商品情報を取得（バリエーション商品対応）
- * エラー 11006 の場合は get_items_by_item_group にフォールバック
- *
- * @param {string} itemId
- * @returns {Object} eBay item オブジェクト
- */
-function _getItemForListing(itemId) {
-  const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
-  const token  = EbayLib.getOAuthTokenForListing(spreadsheetId);
-  const apiUrl = 'https://api.ebay.com/buy/browse/v1/item/get_item_by_legacy_id'
-               + '?legacy_item_id=' + itemId + '&fieldgroups=PRODUCT';
-
-  const response = UrlFetchApp.fetch(apiUrl, {
-    method: 'get',
-    headers: {
-      'Authorization': 'Bearer ' + token,
-      'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
-    },
-    muteHttpExceptions: true
-  });
-
-  const statusCode = response.getResponseCode();
-  const body       = response.getContentText();
-
-  if (statusCode === 200) {
-    Logger.log('[_getItemForListing] 取得成功: itemId=' + itemId);
-    return JSON.parse(body);
-  }
-
-  // エラー 11006: バリエーション商品 → item_group にフォールバック
-  try {
-    const errorData = JSON.parse(body);
-    if (errorData.errors && errorData.errors.length > 0) {
-      const firstError = errorData.errors[0];
-      if (Number(firstError.errorId) === 11006) {
-        Logger.log('[_getItemForListing] バリエーション商品を検出。item_group API で再取得。');
-        if (firstError.parameters && Array.isArray(firstError.parameters)) {
-          const groupParam = firstError.parameters.find(function(p) { return p.name === 'itemGroupHref'; });
-          if (groupParam && groupParam.value) {
-            const m = groupParam.value.match(/item_group_id=(\d+)/);
-            if (m && m[1]) return _getItemGroupForListing_(m[1], token);
-          }
-        }
-      }
-    }
-  } catch (parseErr) {}
-
-  if (statusCode === 404) throw new Error('商品が見つかりません。URLを確認してください。');
-  if (statusCode === 401 || statusCode === 403) {
-    throw new Error('eBay API認証に失敗しました。ツール設定の App ID / Cert ID / USER_TOKEN を確認してください。');
-  }
-  throw new Error('eBay API エラー (HTTP ' + statusCode + '): ' + body.substring(0, 200));
-}
-
-/**
- * アイテムグループAPIで最初のバリエーション商品を取得
- *
- * @param {string} itemGroupId
- * @param {string} token
- * @returns {Object} eBay item オブジェクト（最初のバリエーション）
- */
-function _getItemGroupForListing_(itemGroupId, token) {
-  const apiUrl = 'https://api.ebay.com/buy/browse/v1/item/get_items_by_item_group'
-               + '?item_group_id=' + itemGroupId;
-
-  const response = UrlFetchApp.fetch(apiUrl, {
-    method: 'get',
-    headers: {
-      'Authorization': 'Bearer ' + token,
-      'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
-    },
-    muteHttpExceptions: true
-  });
-
-  if (response.getResponseCode() !== 200) {
-    throw new Error('アイテムグループAPI エラー (HTTP ' + response.getResponseCode() + ')');
-  }
-
-  const data = JSON.parse(response.getContentText());
-  if (!data.items || data.items.length === 0) {
-    throw new Error('アイテムグループにバリエーションが見つかりません: ' + itemGroupId);
-  }
-
-  const firstItem = data.items[0];
-  firstItem._isItemGroup    = true;
-  firstItem._itemGroupId    = itemGroupId;
-  firstItem._variationCount = data.items.length;
-  Logger.log('[_getItemGroupForListing_] バリエーション商品取得: ' + firstItem.title);
-  return firstItem;
-}
-
-/**
- * eBay item オブジェクトからカテゴリIDを取得
- * @param {Object} item
- * @returns {string}
- */
-function _extractCategoryIdFromItem(item) {
-  return String(item.categoryId || '');
-}
-
-/**
- * eBay item オブジェクトからカテゴリ名（末尾セグメント）を取得
- * @param {Object} item
- * @returns {string}
- */
-function _extractCategoryNameFromItem(item) {
-  if (!item.categoryPath) return '';
-  const parts = item.categoryPath.split(' > ');
-  return parts[parts.length - 1] || '';
-}
-
-/**
- * eBay item からアイテムスペシフィックスを抽出
- * localizedAspects + Brand / MPN / UPC / EAN / GTIN
- *
- * @param {Object} item
- * @returns {Object} {aspectName: value}
- */
-function _extractItemSpecificsFromItem(item) {
-  const specifics = {};
-
-  // localizedAspects から取得
-  if (item.localizedAspects && Array.isArray(item.localizedAspects)) {
-    item.localizedAspects.forEach(function(aspect) {
-      if (aspect.name && aspect.value) {
-        specifics[aspect.name] = aspect.value;
-      }
-    });
-  }
-
-  if (item.brand)  specifics['Brand'] = item.brand;
-  if (item.mpn)    specifics['MPN']   = item.mpn;
-  if (item.upc)    specifics['UPC']   = item.upc;
-  if (item.ean && !specifics['UPC'])  specifics['EAN'] = item.ean;
-  if (item.gtin && Array.isArray(item.gtin) && item.gtin.length > 0 && !specifics['UPC']) {
-    specifics['UPC'] = item.gtin[0];
-  }
-
-  Logger.log('[_extractItemSpecificsFromItem] ' + Object.keys(specifics).length + '件');
-  return specifics;
-}
-
-/**
- * カテゴリマスタから 1 カテゴリ分のデータを取得（listing container 専用）
- * category_master_EBAY_US シートをヘッダーベースで読み込む
- *
- * @param {string} categoryId
- * @returns {Object|null} {requiredSpecs, recommendedSpecs, optionalSpecs, aspectValues, conditionGroup}
- */
-function _getCategoryMasterDataForListing(categoryId) {
-  try {
-    const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
-    const config       = EbayLib.getListingToolConfig(spreadsheetId);
-    const masterIdOrUrl = String(config['カテゴリマスタ'] || '').trim();
-    if (!masterIdOrUrl) {
-      Logger.log('[_getCategoryMasterDataForListing] カテゴリマスタが未設定（ツール設定 > カテゴリマスタ）');
-      return null;
-    }
-
-    // URL の場合は ID 部分を抽出
-    let masterId = masterIdOrUrl;
-    const urlMatch = masterIdOrUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-    if (urlMatch && urlMatch[1]) masterId = urlMatch[1];
-
-    const masterSs = SpreadsheetApp.openById(masterId);
-    const sheet    = masterSs.getSheetByName('category_master_EBAY_US');
-    if (!sheet) {
-      Logger.log('[_getCategoryMasterDataForListing] category_master_EBAY_US シートが見つかりません');
-      return null;
-    }
-
-    const data    = sheet.getDataRange().getValues();
-    const headers = data[0];
-
-    const idx = {
-      catId:  headers.indexOf('category_id'),
-      catName:headers.indexOf('category_name'),
-      req:    headers.indexOf('required_specs_json'),
-      rec:    headers.indexOf('recommended_specs_json'),
-      opt:    headers.indexOf('optional_specs_json'),
-      aspVal: headers.indexOf('aspect_values_json'),
-      group:  headers.indexOf('condition_group')
-    };
-
-    if (idx.catId === -1) {
-      Logger.log('[_getCategoryMasterDataForListing] category_id 列が見つかりません');
-      return null;
-    }
-
-    const parseArr = function(v) { try { return v ? JSON.parse(v) : []; } catch (e) { return []; } };
-    const parseObj = function(v) { try { return v ? JSON.parse(v) : {}; } catch (e) { return {}; } };
-
-    for (let i = 1; i < data.length; i++) {
-      if (String(data[i][idx.catId]) === String(categoryId)) {
-        return {
-          categoryId:       String(data[i][idx.catId]),
-          categoryName:     idx.catName !== -1 ? String(data[i][idx.catName] || '') : '',
-          requiredSpecs:    idx.req    !== -1 ? parseArr(data[i][idx.req])    : [],
-          recommendedSpecs: idx.rec    !== -1 ? parseArr(data[i][idx.rec])    : [],
-          optionalSpecs:    idx.opt    !== -1 ? parseArr(data[i][idx.opt])    : [],
-          aspectValues:     idx.aspVal !== -1 ? parseObj(data[i][idx.aspVal]) : {},
-          conditionGroup:   idx.group  !== -1 ? String(data[i][idx.group] || '') : ''
-        };
-      }
-    }
-
-    Logger.log('[_getCategoryMasterDataForListing] カテゴリID ' + categoryId + ' が見つかりません');
-    return null;
-
-  } catch (e) {
-    Logger.log('[_getCategoryMasterDataForListing] エラー: ' + e.toString());
-    return null;
-  }
-}
-
-/**
- * Item Specifics を優先度順にソートして最大 30 件返す
- * Brand / UPC / EAN / MPN / Condition は除外（専用列に書き込む）
- * 30 件未満の場合、カテゴリマスタから不足分を充填
- *
- * @param {Object} specifics {name: value}
- * @param {Object|null} catData _getCategoryMasterDataForListing の戻り値
- * @returns {Array<{name, value, priority, hasValue, color}>}
- */
-function _sortSpecsForListing(specifics, catData) {
-  const EXCLUDE          = ['Brand', 'UPC', 'EAN', 'MPN', 'Condition'];
-  const COLOR_REQUIRED   = '#CC0000';
-  const COLOR_RECOMMENDED = '#1155CC';
-  const COLOR_OPTIONAL   = '#666666';
-
-  const requiredSpecs    = catData ? (catData.requiredSpecs    || []) : [];
-  const recommendedSpecs = catData ? (catData.recommendedSpecs || []) : [];
-  const optionalSpecs    = catData ? (catData.optionalSpecs    || []) : [];
-
-  const specArray = [];
-  const usedNames = [];
-
-  // 取得済みスペックを優先度付きで格納
-  Object.keys(specifics).forEach(function(key) {
-    if (EXCLUDE.indexOf(key) !== -1) return;
-
-    const value    = specifics[key];
-    const hasValue = value !== null && value !== undefined && String(value).trim() !== '';
-
-    let priority = 3;
-    let color    = COLOR_OPTIONAL;
-
-    if (requiredSpecs.indexOf(key) !== -1) {
-      priority = 1; color = COLOR_REQUIRED;
-    } else if (recommendedSpecs.indexOf(key) !== -1) {
-      priority = 2; color = COLOR_RECOMMENDED;
-    }
-
-    specArray.push({ name: key, value: value || '', priority: priority, hasValue: hasValue, color: color });
-    usedNames.push(key);
-  });
-
-  // 優先度 → 値有無 → 名前でソート
-  specArray.sort(function(a, b) {
-    if (a.priority !== b.priority) return a.priority - b.priority;
-    if (a.hasValue !== b.hasValue) return a.hasValue ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
-
-  // 30 件未満ならカテゴリマスタから不足分を充填
-  if (specArray.length < 30) {
-    const fillCandidates = [];
-
-    requiredSpecs.forEach(function(name) {
-      if (typeof name !== 'string') return;
-      if (usedNames.indexOf(name) === -1 && EXCLUDE.indexOf(name) === -1) {
-        fillCandidates.push({ name: name, value: '', priority: 1, hasValue: false, color: COLOR_REQUIRED });
-      }
-    });
-    recommendedSpecs.forEach(function(name) {
-      if (typeof name !== 'string') return;
-      if (usedNames.indexOf(name) === -1 && EXCLUDE.indexOf(name) === -1) {
-        fillCandidates.push({ name: name, value: '', priority: 2, hasValue: false, color: COLOR_RECOMMENDED });
-      }
-    });
-    optionalSpecs.forEach(function(name) {
-      if (typeof name !== 'string') return;
-      if (usedNames.indexOf(name) === -1 && EXCLUDE.indexOf(name) === -1) {
-        fillCandidates.push({ name: name, value: '', priority: 3, hasValue: false, color: COLOR_OPTIONAL });
-      }
-    });
-
-    const remaining = 30 - specArray.length;
-    for (let i = 0; i < remaining && i < fillCandidates.length; i++) {
-      specArray.push(fillCandidates[i]);
-    }
-  }
-
-  Logger.log('[_sortSpecsForListing] 最終スペック数: ' + specArray.length + '件');
-  return specArray;
-}
-
-/**
- * ソート済みスペックを出品シートの Item Specifics 列に書き込む
- *
- * - 項目名（N）セル: 名前 + フォント色（優先度別）
- * - 内容（N）セル: 値 + SELECTION_ONLY の場合はプルダウンを設定
- * - 30 件を超える範囲はクリア
- *
- * @param {Sheet} sheet
- * @param {number} row
- * @param {Object} headerMapping
- * @param {Array} sortedSpecs
- * @param {Object|null} catData
- */
-function _writeSpecsToListingSheet(sheet, row, headerMapping, sortedSpecs, catData) {
-  const aspectValues = catData ? (catData.aspectValues || {}) : {};
-  const limit        = Math.min(sortedSpecs.length, 30);
-
-  for (let i = 0; i < 30; i++) {
-    const nameCol  = headerMapping['項目名（' + (i + 1) + '）'];
-    const valueCol = headerMapping['内容（' + (i + 1) + '）'];
-
-    if (!nameCol && !valueCol) continue;
-
-    if (i >= limit) {
-      // 範囲外はクリア
-      if (nameCol)  sheet.getRange(row, nameCol).clearContent().clearDataValidations().setFontColor(null);
-      if (valueCol) sheet.getRange(row, valueCol).clearContent().clearDataValidations();
-      continue;
-    }
-
-    const spec = sortedSpecs[i];
-
-    // 項目名セル
-    if (nameCol) {
-      sheet.getRange(row, nameCol)
-        .setValue(spec.name)
-        .setFontColor(spec.color);
-    }
-
-    // 内容セル
-    if (valueCol) {
-      const valueCell = sheet.getRange(row, valueCol);
-
-      // SELECTION_ONLY のプルダウンを設定
-      const allowed = aspectValues[spec.name];
-      if (Array.isArray(allowed) && allowed.length > 0) {
-        const rule = SpreadsheetApp.newDataValidation()
-          .requireValueInList(allowed.map(String), true)
-          .setAllowInvalid(true)
-          .build();
-        valueCell.setDataValidation(rule);
-      } else {
-        valueCell.clearDataValidations();
-      }
-
-      // 値を書き込み
-      if (spec.value !== null && spec.value !== undefined && String(spec.value).trim() !== '') {
-        valueCell.setValue(spec.value);
-      } else {
-        valueCell.clearContent();
-      }
-    }
-  }
-
-  Logger.log('[_writeSpecsToListingSheet] 書き込み完了: ' + limit + '件');
 }
 
 /**
@@ -1597,147 +1148,6 @@ function menuUpdateKanriYmDropdown() {
     }
   } catch(e) {
     ui.alert('❌ エラー', e.toString(), ui.ButtonSet.OK);
-  }
-}
-
-/**
- * 状態テンプレ列変更時：状態_テンプレシートからテンプレートを取得して状態説明列に出力
- */
-function _handleConditionTemplateChange(sheet, row, headerMapping, selectedCondition, spreadsheetId) {
-  try {
-    Logger.log('状態テンプレ変更: ' + selectedCondition);
-
-    // 状態_テンプレシートを取得
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const templateSheet = ss.getSheetByName('状態_テンプレ');
-    if (!templateSheet) {
-      Logger.log('⚠️ 状態_テンプレシートが見つかりません');
-      return;
-    }
-
-    // ヘッダーマッピング
-    const lastCol = templateSheet.getLastColumn();
-    const lastRow = templateSheet.getLastRow();
-    if (lastRow < 2) return;
-
-    const headers = templateSheet.getRange(1, 1, 1, lastCol).getValues()[0];
-    const conditionIdx = headers.findIndex(function(h) {
-      return String(h || '').trim() === 'コンディション';
-    });
-    const templateIdx = headers.findIndex(function(h) {
-      return String(h || '').trim() === 'テンプレート(英語)';
-    });
-
-    if (conditionIdx === -1 || templateIdx === -1) {
-      Logger.log('⚠️ 状態_テンプレシートに「コンディション」または「テンプレート(英語)」列が見つかりません');
-      return;
-    }
-
-    // 選択されたコンディションに対応するテンプレートを検索
-    const data = templateSheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
-    let templateText = '';
-    for (let i = 0; i < data.length; i++) {
-      const condition = String(data[i][conditionIdx] || '').trim();
-      if (condition === selectedCondition) {
-        templateText = String(data[i][templateIdx] || '').trim();
-        break;
-      }
-    }
-
-    if (!templateText) {
-      Logger.log('⚠️ 「' + selectedCondition + '」のテンプレートが見つかりません');
-      return;
-    }
-
-    // 状態説明列に出力
-    const conditionDescCol = headerMapping['状態説明'];
-    if (!conditionDescCol) {
-      Logger.log('⚠️ 「状態説明」列が見つかりません');
-      return;
-    }
-
-    sheet.getRange(row, conditionDescCol).setValue(templateText);
-    Logger.log('✅ 状態説明を更新: ' + templateText.substring(0, 50) + '...');
-
-  } catch(e) {
-    Logger.log('_handleConditionTemplateChange エラー: ' + e.toString());
-  }
-}
-
-/**
- * 発送業者列変更時：プルダウン管理シートから発送方法リストを取得して発送方法列にプルダウン展開
- */
-function _handleShipperChange(sheet, row, headerMapping, selectedShipper, spreadsheetId) {
-  try {
-    Logger.log('発送業者変更: ' + selectedShipper);
-
-    // プルダウン管理シートを取得
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const pulldownSheet = ss.getSheetByName('プルダウン管理');
-    if (!pulldownSheet) {
-      Logger.log('⚠️ プルダウン管理シートが見つかりません');
-      return;
-    }
-
-    // ヘッダー行から発送業者名の列を特定
-    const lastCol = pulldownSheet.getLastColumn();
-    const lastRow = pulldownSheet.getLastRow();
-    if (lastRow < 2) return;
-
-    const headers = pulldownSheet.getRange(1, 1, 1, lastCol).getValues()[0];
-    const shipperColIdx = headers.findIndex(function(h) {
-      return String(h || '').trim() === selectedShipper;
-    });
-
-    if (shipperColIdx === -1) {
-      Logger.log('⚠️ プルダウン管理シートに「' + selectedShipper + '」列が見つかりません');
-      return;
-    }
-
-    // 選択された業者列から発送方法リストを取得（2行目以降・空白スキップ）
-    const methodValues = pulldownSheet.getRange(2, shipperColIdx + 1, lastRow - 1, 1).getValues();
-    const methodList = methodValues
-      .map(function(r) { return String(r[0] || '').trim(); })
-      .filter(function(v) { return v !== ''; });
-
-    if (methodList.length === 0) {
-      Logger.log('⚠️ 「' + selectedShipper + '」の発送方法リストが空です');
-      return;
-    }
-
-    Logger.log('発送方法リスト: ' + methodList.join(', '));
-
-    // 発送方法列にプルダウンを設定
-    const shippingMethodCol = headerMapping['発送方法'];
-    if (!shippingMethodCol) {
-      Logger.log('⚠️ 「発送方法」列が見つかりません');
-      return;
-    }
-
-    const rule = SpreadsheetApp.newDataValidation()
-      .requireValueInList(methodList, true)
-      .setAllowInvalid(false)
-      .build();
-
-    const methodCell = sheet.getRange(row, shippingMethodCol);
-    methodCell.setDataValidation(rule);
-
-    // 現在の発送方法が新しいリストにない場合はクリア
-    const currentMethod = String(methodCell.getValue() || '').trim();
-    if (currentMethod && methodList.indexOf(currentMethod) === -1) {
-      methodCell.clearContent();
-      Logger.log('発送方法をクリア（前の値が新リストにない）: ' + currentMethod);
-    }
-
-    // リストの最初の値を自動選択（現在値が空の場合）
-    if (!currentMethod) {
-      methodCell.setValue(methodList[0]);
-    }
-
-    Logger.log('✅ 発送方法プルダウンを更新: ' + methodList.length + '件');
-
-  } catch(e) {
-    Logger.log('_handleShipperChange エラー: ' + e.toString());
   }
 }
 

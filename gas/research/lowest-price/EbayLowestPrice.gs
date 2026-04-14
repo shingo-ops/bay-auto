@@ -477,15 +477,19 @@ function lpGetRandomUA() {
 function lpGetRequestHeaders() {
   return {
     'User-Agent':                lpGetRandomUA(),
-    'Accept':                    'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept':                    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
     'Accept-Language':           'en-US,en;q=0.9',
     'Accept-Encoding':           'gzip, deflate, br',
     'Cache-Control':             'no-cache',
     'Pragma':                    'no-cache',
     'Referer':                   'https://www.ebay.com/',
+    'sec-ch-ua':                 '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    'sec-ch-ua-mobile':          '?0',
+    'sec-ch-ua-platform':        '"Windows"',
     'Sec-Fetch-Dest':            'document',
     'Sec-Fetch-Mode':            'navigate',
     'Sec-Fetch-Site':            'same-origin',
+    'Sec-Fetch-User':            '?1',
     'Upgrade-Insecure-Requests': '1',
   };
 }
@@ -579,73 +583,169 @@ function lpFetchItemPage(itemUrl) {
  * @returns {Array|null} アイテム配列。パーサー破損時はnull
  */
 function lpParseItems(html) {
-  const hasSItem    = html.indexOf('s-item') !== -1;
-  const itemPattern = /<li[^>]+class="[^"]*s-item[^"]*"[^>]*>([\s\S]*?)<\/li>/g;
-  const items = [];
-  let match;
+  // ── 構造フラグ確認 ──
+  const hasSItem     = html.indexOf('s-item') !== -1;
+  const hasSCard     = html.indexOf('s-card') !== -1;
+  const hasVertical  = html.indexOf('s-card--vertical') !== -1;
+  const hasSrp       = html.indexOf('srp-results') !== -1;
+  const hasListingId = html.indexOf('data-listingid') !== -1;
+  Logger.log('[lpParseItems] 構造フラグ: s-item=' + hasSItem +
+    ' s-card=' + hasSCard + ' s-card--vertical=' + hasVertical +
+    ' srp-results=' + hasSrp + ' data-listingid=' + hasListingId);
 
-  while ((match = itemPattern.exec(html)) !== null) {
-    const item = lpParseItemBlock(match[1]);
+  // ── ブロック分割（優先順: s-card--vertical > s-card > s-item） ──
+  const MARKERS = [
+    'class="s-card s-card--vertical"',  // 現行構造（2026年4月）
+    "class='s-card s-card--vertical'",  // シングルクォート変形
+    'class="s-card"',                   // 中間構造
+    'class="s-item"',                   // 旧構造
+  ];
+
+  let liPositions = [];
+  for (let m = 0; m < MARKERS.length; m++) {
+    const marker = MARKERS[m];
+    let pos = 0;
+    const tmp = [];
+    while (true) {
+      const idx = html.indexOf(marker, pos);
+      if (idx < 0) break;
+      const liIdx = html.lastIndexOf('<li', idx);
+      if (liIdx >= 0) tmp.push(liIdx);
+      pos = idx + marker.length;
+    }
+    if (tmp.length > 0) {
+      // 重複除去
+      liPositions = tmp.filter(function(v, i, a) { return a.indexOf(v) === i; });
+      Logger.log('[lpParseItems] マーカー="' + marker + '" → 分割件数: ' + liPositions.length);
+      break;
+    }
+  }
+
+  if (liPositions.length === 0) {
+    Logger.log('[lpParseItems] 商品ブロックが見つかりません。HTMLの構造が変わった可能性あり。');
+    if (hasSItem) return null; // パーサー破損の可能性
+    return [];
+  }
+
+  // ── 各ブロックをパース ──
+  const items = [];
+  for (let i = 0; i < liPositions.length; i++) {
+    const start = liPositions[i];
+    const end   = (i + 1 < liPositions.length) ? liPositions[i + 1] : html.length;
+    const item  = lpParseItemBlock(html.substring(start, end));
     if (item) items.push(item);
   }
 
-  if (items.length === 0 && hasSItem) return null; // パーサー破損の可能性
+  Logger.log('[lpParseItems] 有効件数: ' + items.length + ' / 分割件数: ' + liPositions.length);
   return items;
 }
 
 /**
- * s-itemブロック1件をパース
+ * 商品ブロック1件をパース（新DOM構造 s-card--vertical 対応）
+ *
+ * 返却フィールド:
+ *   title, url, itemId,
+ *   priceText, priceUsd, priceJpy,
+ *   shipping: { type: 'FREE'|'USD'|'JPY'|'UNKNOWN', amount: number|null },
+ *   conditionText, isFromJapan,
+ *   shippingUsd: null （lpGetLowestItem で解決）
  */
 function lpParseItemBlock(block) {
-  if (block.indexOf('Shop on eBay') !== -1 ||
-      block.indexOf('s-item__placeholder') !== -1) return null;
 
-  // タイトル
-  const titleMatch = block.match(/class="[^"]*s-item__title[^"]*"[^>]*>([\s\S]*?)<\/[^>]+>/);
-  if (!titleMatch) return null;
-  const title = titleMatch[1].replace(/<[^>]+>/g, '').trim();
-  if (!title || title.length < 3) return null;
+  // ── 1. Shop on eBay 除外（listingid 固定値）──
+  if (block.indexOf('2500219655424533') >= 0 ||
+      block.indexOf('2500219655424563') >= 0 ||
+      block.indexOf('s-item__placeholder') >= 0) return null;
 
-  // URL（絶対URL・相対URL両方に対応）
-  const urlMatch = block.match(/href="(https?:\/\/www\.ebay\.com\/itm\/[^"?&]+)/) ||
-                   block.match(/href="(\/itm\/[^"?&]+)/);
+  // ── 2. URL / itemId ──
+  // 新構造: href="https://www.ebay.com/itm/ITEMID" または href=https://...（クォートなし）
+  const urlMatch = block.match(/href="(https?:\/\/www\.ebay\.com\/itm\/(\d+))/) ||
+                   block.match(/href=(https?:\/\/www\.ebay\.com\/itm\/(\d+))/)  ||
+                   block.match(/href="(\/itm\/(\d+))/);
   if (!urlMatch) return null;
-  const url = urlMatch[1].startsWith('/')
-    ? 'https://www.ebay.com' + urlMatch[1]
-    : urlMatch[1];
+  const url    = urlMatch[1].startsWith('/') ? 'https://www.ebay.com' + urlMatch[1] : urlMatch[1];
+  const itemId = urlMatch[2];
 
-  // 本体価格（最初の $X.XX）
-  const priceMatch = block.match(/\$([0-9,]+\.?[0-9]*)/);
-  if (!priceMatch) return null;
-  const priceUsd = parseFloat(priceMatch[1].replace(/,/g, ''));
-  if (isNaN(priceUsd) || priceUsd <= 0) return null;
+  // ── 3. タイトル ──
+  // 新構造: <div class="s-card__title"><span class="...primary default">TITLE</span>
+  // 旧構造: <h3 class="s-item__title">TITLE</h3>
+  let title = '';
+  const titleNew = block.match(/<div[^>]*s-card__title[^>]*>\s*<span[^>]*primary[^>]*default[^>]*>([^<]+)/);
+  if (titleNew) {
+    title = titleNew[1].trim();
+  } else {
+    const titleOld = block.match(/<(?:h3|span)[^>]*s-item__title[^>]*>([\s\S]*?)<\/(?:h3|span)>/);
+    if (titleOld) title = titleOld[1].replace(/<[^>]+>/g, '').trim();
+  }
+  if (!title || title.length < 3 || title === 'Shop on eBay') return null;
 
-  // 送料テキスト
-  let shippingText = '';
-  const shipMatch = block.match(/class="[^"]*s-item__shipping[^"]*"[^>]*>([\s\S]*?)<\/[^>]+>/);
-  if (shipMatch) shippingText = shipMatch[1].replace(/<[^>]+>/g, '').trim();
+  // ── 4. 価格 ──
+  // 新構造: <span class="...s-card__price">$XX.XX or XX,XXX 円</span>
+  // 旧構造: <span class="s-item__price">$XX.XX</span>
+  let priceText = '', priceUsd = null, priceJpy = null;
+  const priceNew = block.match(/<span[^>]*s-card__price[^>]*>([^<]+)/);
+  if (priceNew) {
+    priceText = priceNew[1].trim();
+  } else {
+    const priceOld = block.match(/<span[^>]*s-item__price[^>]*>([^<]+)/);
+    if (priceOld) priceText = priceOld[1].trim();
+  }
+  if (priceText) {
+    const usdM = priceText.match(/\$\s*([\d,]+\.?\d*)/);
+    const jpyM = priceText.match(/([\d,]+)\s*円/);
+    if (usdM)      priceUsd = parseFloat(usdM[1].replace(/,/g, ''));
+    else if (jpyM) priceJpy = parseInt(jpyM[1].replace(/,/g, ''), 10);
+  }
+  if (priceUsd === null && priceJpy === null) return null;
 
-  // コンディション表示（SECONDARY_INFO）
+  // ── 5. 送料（{ type, amount }） ──
+  let shipping = { type: 'UNKNOWN', amount: null };
+  if (/free\s*shipping/i.test(block) || /送料無料/.test(block) || /free\s*international/i.test(block)) {
+    shipping = { type: 'FREE', amount: 0 };
+  } else {
+    const jpyShipM = block.match(/[＋+]送料\s*([\d,]+)\s*円/);
+    if (jpyShipM) {
+      shipping = { type: 'JPY', amount: parseInt(jpyShipM[1].replace(/,/g, ''), 10) };
+    } else {
+      const usdShipM = block.match(/\+?\$\s*([\d,]+\.?\d*)\s*shipping/i);
+      if (usdShipM) shipping = { type: 'USD', amount: parseFloat(usdShipM[1].replace(/,/g, '')) };
+    }
+  }
+
+  // ── 6. コンディション ──
+  // 新構造: <div class="s-card__subtitle"><span ...>COND</span>
+  // 旧構造: <span class="SECONDARY_INFO">COND</span>
   let conditionText = '';
-  const condMatch = block.match(/class="[^"]*SECONDARY_INFO[^"]*"[^>]*>([\s\S]*?)<\/[^>]+>/);
-  if (condMatch) conditionText = condMatch[1].replace(/<[^>]+>/g, '').trim();
+  const condNew = block.match(/<div[^>]*s-card__subtitle[^>]*>\s*<span[^>]*>([^<]+)/);
+  if (condNew) {
+    conditionText = condNew[1].trim();
+  } else {
+    const condOld = block.match(/class="[^"]*SECONDARY_INFO[^"]*"[^>]*>([\s\S]*?)<\/[^>]+>/);
+    if (condOld) conditionText = condOld[1].replace(/<[^>]+>/g, '').trim();
+  }
 
-  // from Japan 二重チェック
+  // ── 7. ロケーション / isFromJapan ──
+  // 新構造: 発送元 XX テキスト
+  // 旧構造: <span class="s-item__location">from Japan</span>
   let isFromJapan = false;
-  const locMatch = block.match(/class="[^"]*s-item__location[^"]*"[^>]*>([\s\S]*?)<\/[^>]+>/);
-  if (locMatch)                                              isFromJapan = locMatch[1].indexOf('Japan') !== -1;
-  if (!isFromJapan && shippingText.indexOf('Japan') !== -1) isFromJapan = true;
-  if (!isFromJapan && block.indexOf('from Japan') !== -1)   isFromJapan = true;
-
-  if (!isFromJapan &&
-      (block.indexOf('from United States') !== -1 ||
-       block.indexOf('from China') !== -1 ||
-       block.indexOf('from Hong Kong') !== -1)) return null;
+  const locNew = block.match(/発送元\s*([^\s<"&]{1,20})/);
+  if (locNew) {
+    const loc = locNew[1].trim();
+    isFromJapan = (loc === '日本' || loc === 'Japan');
+  }
+  if (!isFromJapan) {
+    const locOld = block.match(/class="[^"]*s-item__location[^"]*"[^>]*>([\s\S]*?)<\/[^>]+>/);
+    if (locOld && locOld[1].indexOf('Japan') >= 0) isFromJapan = true;
+  }
+  if (!isFromJapan && block.indexOf('from Japan') >= 0) isFromJapan = true;
 
   return {
-    title: title, url: url, priceUsd: priceUsd,
-    shippingText: shippingText, conditionText: conditionText,
-    isFromJapan: isFromJapan, shippingUsd: null,
+    title, url, itemId,
+    priceText, priceUsd, priceJpy,
+    shipping,
+    conditionText,
+    isFromJapan,
+    shippingUsd: null,
   };
 }
 
@@ -654,13 +754,40 @@ function lpParseItemBlock(block) {
  */
 function lpGetLowestItem(items, exchangeRate) {
   let lowestItem = null, lowestTotal = Infinity;
+
   for (let i = 0; i < items.length; i++) {
-    const item  = items[i];
-    const ship  = lpNormalizeShipping(item.shippingText, exchangeRate);
-    item.shippingUsd = ship;
-    const total = item.priceUsd + (ship !== null ? ship : 0);
+    const item = items[i];
+
+    // priceUsd: JPYのみの場合は為替換算
+    let priceUsd = item.priceUsd;
+    if ((priceUsd === null || priceUsd === undefined) && item.priceJpy) {
+      priceUsd = Math.round((item.priceJpy / exchangeRate) * 100) / 100;
+      item.priceUsd = priceUsd;
+    }
+    if (!priceUsd || priceUsd <= 0) continue;
+
+    // shippingUsd: shipping { type, amount } から解決
+    let shippingUsd = null;
+    const ship = item.shipping;
+    if (ship) {
+      if (ship.type === 'FREE') {
+        shippingUsd = 0;
+      } else if (ship.type === 'USD' && ship.amount !== null) {
+        shippingUsd = ship.amount;
+      } else if (ship.type === 'JPY' && ship.amount !== null) {
+        shippingUsd = Math.round((ship.amount / exchangeRate) * 100) / 100;
+      }
+    }
+    // 後方互換: 旧 shippingText 形式（Browse APIフォールバックのモックHTMLなど）
+    if (shippingUsd === null && item.shippingText) {
+      shippingUsd = lpNormalizeShipping(item.shippingText, exchangeRate);
+    }
+    item.shippingUsd = shippingUsd;
+
+    const total = priceUsd + (shippingUsd !== null ? shippingUsd : 0);
     if (total < lowestTotal) { lowestTotal = total; lowestItem = item; }
   }
+
   return lowestItem;
 }
 
@@ -1002,13 +1129,15 @@ function lpBrowseFallback(keyword, conditionId) {
       const shipping = (item.shippingOptions && item.shippingOptions[0] && item.shippingOptions[0].shippingCost)
         ? '+$' + item.shippingOptions[0].shippingCost.value + ' shipping'
         : 'Free shipping';
-      mockHtml += '<li class="s-item">' +
-        '<h3 class="s-item__title">'   + (item.title || '').replace(/</g, '&lt;') + '</h3>' +
+      mockHtml += '<li data-listingid="' + itemId + '" class="s-card s-card--vertical">' +
+        '<div class="s-card__title"><span class="su-styled-text primary default">' +
+        (item.title || '').replace(/</g, '&lt;') + '</span></div>' +
         '<a href="https://www.ebay.com/itm/' + itemId + '"></a>' +
-        '<span class="s-item__price">$' + price + '</span>' +
-        '<span class="s-item__shipping">' + shipping + '</span>' +
-        '<span class="SECONDARY_INFO">'  + (item.condition || '') + '</span>' +
-        '<span class="s-item__location">from Japan</span>' +
+        '<span class="su-styled-text primary bold large-1 s-card__price">$' + price + '</span>' +
+        '<div class="s-card__subtitle"><span class="su-styled-text secondary default">' +
+        (item.condition || '') + '</span></div>' +
+        '<span class="ship-info">' + shipping + '</span>' +
+        '<span class="loc-info">from Japan</span>' +
         '</li>';
     });
 
@@ -1024,6 +1153,77 @@ function lpBrowseFallback(keyword, conditionId) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // テスト用（clasp run専用）
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/**
+ * lpParseItems / lpParseItemBlock の動作確認（clasp run testLpParser）
+ *
+ * ログ出力内容:
+ *   1. 構造フラグ確認（s-item / s-card / srp-results / data-listingid）
+ *   2. 分割件数・有効件数
+ *   3. 最初の3件の全フィールド
+ */
+function testLpParser() {
+  const TEST_URL =
+    'https://www.ebay.com/sch/i.html' +
+    '?_nkw=pokemon+booster+box&_sacat=0&LH_BIN=1&LH_ItemCondition=2750' +
+    '&_sop=15&_salic=104&LH_LocatedIn=1';
+
+  Logger.log('========================================');
+  Logger.log('testLpParser 開始');
+  Logger.log('URL: ' + TEST_URL);
+  Logger.log('========================================');
+
+  const html = lpFetchEbayPage(TEST_URL);
+  if (!html) {
+    Logger.log('ERROR: HTMLの取得に失敗しました');
+    return;
+  }
+  Logger.log('HTML取得完了: ' + html.length + ' bytes');
+  Logger.log('[HTML先頭1000文字]\n' + html.substring(0, 1000));
+
+  // ── 構造フラグ（lpParseItems内でも出力されるが先行確認） ──
+  Logger.log('--- 構造フラグ ---');
+  Logger.log('s-item        : ' + (html.indexOf('s-item') !== -1));
+  Logger.log('s-card        : ' + (html.indexOf('s-card') !== -1));
+  Logger.log('s-card--vert  : ' + (html.indexOf('s-card--vertical') !== -1));
+  Logger.log('srp-results   : ' + (html.indexOf('srp-results') !== -1));
+  Logger.log('data-listingid: ' + (html.indexOf('data-listingid') !== -1));
+
+  const items = lpParseItems(html);
+
+  if (items === null) {
+    Logger.log('RESULT: パーサー破損 (s-item あり / 有効件数0)');
+    return;
+  }
+
+  Logger.log('--- 結果サマリー ---');
+  Logger.log('有効件数: ' + items.length);
+
+  if (items.length === 0) {
+    Logger.log('RESULT: 有効商品なし');
+    return;
+  }
+
+  Logger.log('--- 上位3件（全フィールド） ---');
+  const limit = Math.min(3, items.length);
+  for (let i = 0; i < limit; i++) {
+    const it = items[i];
+    Logger.log('[' + (i + 1) + '] title       : ' + it.title);
+    Logger.log('[' + (i + 1) + '] url         : ' + it.url);
+    Logger.log('[' + (i + 1) + '] itemId      : ' + it.itemId);
+    Logger.log('[' + (i + 1) + '] priceText   : ' + it.priceText);
+    Logger.log('[' + (i + 1) + '] priceUsd    : ' + it.priceUsd);
+    Logger.log('[' + (i + 1) + '] priceJpy    : ' + it.priceJpy);
+    Logger.log('[' + (i + 1) + '] shipping    : ' + JSON.stringify(it.shipping));
+    Logger.log('[' + (i + 1) + '] conditionText: ' + it.conditionText);
+    Logger.log('[' + (i + 1) + '] isFromJapan : ' + it.isFromJapan);
+    Logger.log('');
+  }
+
+  Logger.log('========================================');
+  Logger.log('testLpParser 完了');
+  Logger.log('========================================');
+}
 
 function checkLowestPriceResults() {
   const logSheet     = ss.getSheetByName(LP_SHEET.LOG);

@@ -252,3 +252,146 @@ function testGetConditionByJaDisplay() {
   Logger.log('逆引き結果: ' + JSON.stringify(cond));
   // 期待値例: { condition_id: 3000, condition_name: "Used", condition_enum: "USED_GOOD" }
 }
+
+/**
+ * 状態テンプレ列変更時：テンプレートシートから状態説明テキストを取得してセット
+ * @param {string} spreadsheetId
+ * @param {string} sheetName
+ * @param {number} row
+ * @param {string} selectedCondition
+ */
+function handleConditionTemplateChange(spreadsheetId, sheetName, row, selectedCondition) {
+  try {
+    Logger.log('状態テンプレ変更: ' + selectedCondition);
+
+    const ss = getTargetSpreadsheet(spreadsheetId);
+    const templateSheet = ss.getSheetByName('状態_テンプレ');
+    if (!templateSheet) {
+      Logger.log('⚠️ 状態_テンプレシートが見つかりません');
+      return;
+    }
+
+    const lastCol = templateSheet.getLastColumn();
+    const lastRow = templateSheet.getLastRow();
+    if (lastRow < 2) return;
+
+    const headers = templateSheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    const conditionIdx = headers.findIndex(function(h) {
+      return String(h || '').trim() === 'コンディション';
+    });
+    const templateIdx = headers.findIndex(function(h) {
+      return String(h || '').trim() === 'テンプレート(英語)';
+    });
+
+    if (conditionIdx === -1 || templateIdx === -1) {
+      Logger.log('⚠️ 状態_テンプレシートに「コンディション」または「テンプレート(英語)」列が見つかりません');
+      return;
+    }
+
+    const data = templateSheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    let templateText = '';
+    for (let i = 0; i < data.length; i++) {
+      const condition = String(data[i][conditionIdx] || '').trim();
+      if (condition === selectedCondition) {
+        templateText = String(data[i][templateIdx] || '').trim();
+        break;
+      }
+    }
+
+    if (!templateText) {
+      Logger.log('⚠️ 「' + selectedCondition + '」のテンプレートが見つかりません');
+      return;
+    }
+
+    const headerMapping = buildListingHeaderMapping(spreadsheetId, sheetName);
+    const conditionDescCol = headerMapping['状態説明'];
+    if (!conditionDescCol) {
+      Logger.log('⚠️ 「状態説明」列が見つかりません');
+      return;
+    }
+
+    const sheet = ss.getSheetByName(sheetName);
+    sheet.getRange(row, conditionDescCol).setValue(templateText);
+    Logger.log('✅ 状態説明を更新: ' + templateText.substring(0, 50) + '...');
+
+  } catch(e) {
+    Logger.log('handleConditionTemplateChange エラー: ' + e.toString());
+  }
+}
+
+/**
+ * 発送業者列変更時：プルダウン管理シートから発送方法リストを取得して発送方法列にプルダウン展開
+ * @param {string} spreadsheetId
+ * @param {string} sheetName
+ * @param {number} row
+ * @param {string} selectedShipper
+ */
+function handleShipperChange(spreadsheetId, sheetName, row, selectedShipper) {
+  try {
+    Logger.log('発送業者変更: ' + selectedShipper);
+
+    const ss = getTargetSpreadsheet(spreadsheetId);
+    const pulldownSheet = ss.getSheetByName('プルダウン管理');
+    if (!pulldownSheet) {
+      Logger.log('⚠️ プルダウン管理シートが見つかりません');
+      return;
+    }
+
+    const lastCol = pulldownSheet.getLastColumn();
+    const lastRow = pulldownSheet.getLastRow();
+    if (lastRow < 2) return;
+
+    const headers = pulldownSheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    const shipperColIdx = headers.findIndex(function(h) {
+      return String(h || '').trim() === selectedShipper;
+    });
+
+    if (shipperColIdx === -1) {
+      Logger.log('⚠️ プルダウン管理シートに「' + selectedShipper + '」列が見つかりません');
+      return;
+    }
+
+    const methodValues = pulldownSheet.getRange(2, shipperColIdx + 1, lastRow - 1, 1).getValues();
+    const methodList = methodValues
+      .map(function(r) { return String(r[0] || '').trim(); })
+      .filter(function(v) { return v !== ''; });
+
+    if (methodList.length === 0) {
+      Logger.log('⚠️ 「' + selectedShipper + '」の発送方法リストが空です');
+      return;
+    }
+
+    Logger.log('発送方法リスト: ' + methodList.join(', '));
+
+    const headerMapping = buildListingHeaderMapping(spreadsheetId, sheetName);
+    const shippingMethodCol = headerMapping['発送方法'];
+    if (!shippingMethodCol) {
+      Logger.log('⚠️ 「発送方法」列が見つかりません');
+      return;
+    }
+
+    const sheet = ss.getSheetByName(sheetName);
+    const rule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(methodList, true)
+      .setAllowInvalid(false)
+      .build();
+
+    const methodCell = sheet.getRange(row, shippingMethodCol);
+    methodCell.setDataValidation(rule);
+
+    const currentMethod = String(methodCell.getValue() || '').trim();
+    if (currentMethod && methodList.indexOf(currentMethod) === -1) {
+      methodCell.clearContent();
+      Logger.log('発送方法をクリア（前の値が新リストにない）: ' + currentMethod);
+    }
+
+    if (!currentMethod) {
+      methodCell.setValue(methodList[0]);
+    }
+
+    Logger.log('✅ 発送方法プルダウンを更新: ' + methodList.length + '件');
+
+  } catch(e) {
+    Logger.log('handleShipperChange エラー: ' + e.toString());
+  }
+}
