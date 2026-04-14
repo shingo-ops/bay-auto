@@ -54,6 +54,7 @@ function onOpen() {
 
   ui.createMenu('在庫管理')
     .addItem('セルスタCSV出力', 'menuExportSellstaCsv')
+    .addItem('仕入元名を一括更新', 'menuUpdatePurchaseSiteNames')
     .addToUi();
 
   ui.createMenu('その他')
@@ -460,6 +461,21 @@ function handleEdit(e) {
     const categoryIdCol = EbayLib.getCategoryIdColumnNumber(spreadsheetId);
     if (categoryIdCol && col === categoryIdCol) {
       _handleCategoryIdChange(e, spreadsheetId, sheetName, row);
+      return;
+    }
+
+    // 仕入元URL①②③の変更 → サイト名を自動判定して仕入元名①②③に書き込む
+    const purchaseUrlCols = ['仕入元URL①', '仕入元URL②', '仕入元URL③'];
+    const changedHeader = Object.keys(headerMapping).find(function(h) {
+      return headerMapping[h] === col;
+    });
+    if (changedHeader && purchaseUrlCols.indexOf(changedHeader) !== -1) {
+      try {
+        const siteNameMap = EbayLib.getSiteNameMap(spreadsheetId);
+        EbayLib.updateSiteNameForRow(sheet, row, headerMapping, siteNameMap);
+      } catch(siteErr) {
+        Logger.log('仕入元名自動判定エラー: ' + siteErr.toString());
+      }
       return;
     }
 
@@ -1595,6 +1611,16 @@ function menuExportSellstaCsv() {
 function menuClearSellstaCsvSheet() {
   const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
   EbayLib.clearSellstaCsvSheet(spreadsheetId);
+}
+
+/**
+ * 【在庫管理】仕入元名を一括更新
+ */
+function menuUpdatePurchaseSiteNames() {
+  const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+  const ui = SpreadsheetApp.getUi();
+  const result = EbayLib.updatePurchaseSiteNames(spreadsheetId);
+  ui.alert(result.success ? '完了' : 'エラー', result.message, ui.ButtonSet.OK);
 }
 
 /**
