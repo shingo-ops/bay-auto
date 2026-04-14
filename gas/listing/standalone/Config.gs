@@ -390,6 +390,19 @@ function getEbayConfig() {
 }
 
 /**
+ * ツール設定シートの生キー値マップを返す
+ * container側の _getListingToolConfig_() の置き換え用
+ * getConfig() と同じ形式: { 'App ID': '...', 'RuName': '...', ... }
+ *
+ * @param {string} spreadsheetId
+ * @returns {Object} ツール設定の生キー値マップ
+ */
+function getListingToolConfig(spreadsheetId) {
+  if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+  return getConfig();
+}
+
+/**
  * User Tokenを取得（"ツール設定"シートから）
  *
  * @returns {string} User Token

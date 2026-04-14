@@ -752,7 +752,8 @@ function authorizeScript() {
 function menuOAuthGenerateUrl() {
   const ui = SpreadsheetApp.getUi();
   try {
-    const config = _getListingToolConfig_();
+    const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+    const config = EbayLib.getListingToolConfig(spreadsheetId);
     const appId  = String(config['App ID']  || '').trim();
     const ruName = String(config['RuName']  || '').trim();
 
@@ -813,7 +814,8 @@ function menuOAuthExchangeCode() {
   }
 
   try {
-    const config  = _getListingToolConfig_();
+    const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+    const config  = EbayLib.getListingToolConfig(spreadsheetId);
     const appId   = String(config['App ID']  || '').trim();
     const certId  = String(config['Cert ID'] || '').trim();
     const ruName  = String(config['RuName']  || '').trim();
@@ -1086,46 +1088,13 @@ function _extractItemIdForListing(url) {
 }
 
 /**
- * ツール設定シートから設定値を取得（listing container 専用）
- * 「項目」列=キー、「値」列=値 の形式
- * @returns {Object}
- */
-function _getListingToolConfig_() {
-  try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const settingsSheet = ss.getSheetByName('ツール設定');
-    if (!settingsSheet) {
-      Logger.log('[_getListingToolConfig_] ツール設定シートが見つかりません');
-      return {};
-    }
-    const data = settingsSheet.getDataRange().getValues();
-    if (data.length < 2) return {};
-    const headers  = data[0];
-    const itemIdx  = headers.indexOf('項目');
-    const valueIdx = headers.indexOf('値');
-    if (itemIdx === -1 || valueIdx === -1) {
-      Logger.log('[_getListingToolConfig_] 項目/値 列が見つかりません');
-      return {};
-    }
-    const config = {};
-    for (let i = 1; i < data.length; i++) {
-      const key = String(data[i][itemIdx] || '').trim();
-      if (key) config[key] = data[i][valueIdx] || '';
-    }
-    return config;
-  } catch (e) {
-    Logger.log('[_getListingToolConfig_] エラー: ' + e.toString());
-    return {};
-  }
-}
-
-/**
  * eBay APIアクセストークンを取得
  * USER_TOKEN → ScriptProperties キャッシュ → client_credentials の順にフォールバック
  * @returns {string} トークン
  */
 function _getOAuthTokenForListing_() {
-  const config = _getListingToolConfig_();
+  const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+  const config = EbayLib.getListingToolConfig(spreadsheetId);
 
   // USER_TOKEN が設定済みならそれを使用
   const userToken = String(config['USER_TOKEN'] || '').trim();
@@ -1330,7 +1299,8 @@ function _extractItemSpecificsFromItem(item) {
  */
 function _getCategoryMasterDataForListing(categoryId) {
   try {
-    const config       = _getListingToolConfig_();
+    const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+    const config       = EbayLib.getListingToolConfig(spreadsheetId);
     const masterIdOrUrl = String(config['カテゴリマスタ'] || '').trim();
     if (!masterIdOrUrl) {
       Logger.log('[_getCategoryMasterDataForListing] カテゴリマスタが未設定（ツール設定 > カテゴリマスタ）');
