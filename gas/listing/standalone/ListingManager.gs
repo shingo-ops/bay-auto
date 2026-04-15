@@ -1976,6 +1976,13 @@ function transferToOutputDb_phase1(spreadsheetId, rowNumber, listingData, output
       Logger.log('SKU予約完了: ' + newRow + '行目 / SKU: ' + listingData.sku);
     }
 
+    // Item ID列に出品中メモを書き込み（他の処理がこの行を再利用しないようにする）
+    var itemIdColInOutput = outputHeaderRow.indexOf('Item ID');
+    if (itemIdColInOutput !== -1) {
+      outputSheet.getRange(newRow, itemIdColInOutput + 1).setValue('出品中: ' + listingData.sku);
+      Logger.log('Item ID列に出品中メモを書き込み: ' + newRow + '行目');
+    }
+
     // outputRowにSKUをセット
     if (skuColInOutput !== -1) {
       outputRow[skuColInOutput] = listingData.sku;

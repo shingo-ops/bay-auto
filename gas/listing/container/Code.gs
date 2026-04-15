@@ -115,6 +115,20 @@ function menuCreateListing() {
     ? String(sheet.getRange(row, titleCol).getValue() || '').trim()
     : '';
 
+  // === 出品済み重複チェック ===
+  const itemIdCol = headerMapping['Item ID'];
+  if (itemIdCol) {
+    const existingItemId = String(sheet.getRange(row, itemIdCol).getValue() || '').trim();
+    if (existingItemId) {
+      ui.alert(
+        '❌ 出品不可',
+        'この行は既に出品済みです。\n\nItem ID: ' + existingItemId + '\n\n更新する場合は「更新」メニューを使用してください。',
+        ui.ButtonSet.OK
+      );
+      return;
+    }
+  }
+
   // ワード判定を強制実行して結果を取得
   let wordCheck = '';
   try {
