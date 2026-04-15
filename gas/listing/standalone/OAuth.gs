@@ -68,6 +68,98 @@ function getOAuthTokenForListing(spreadsheetId) {
 }
 
 /**
+ * ツール設定シートに Access Token / Refresh Token を保存する
+ * A列のキー名で行を探して B列（値列）を上書きする。
+ *
+ * @param {string} spreadsheetId
+ * @param {string} accessToken
+ * @param {string} refreshToken
+ * @param {number} expiresIn             Access Token 有効期限（秒）
+ * @param {number} refreshTokenExpiresIn Refresh Token 有効期限（秒）
+ */
+function saveOAuthTokensToSheet(spreadsheetId, accessToken, refreshToken, expiresIn, refreshTokenExpiresIn) {
+  const ss            = getTargetSpreadsheet(spreadsheetId);
+  const settingsSheet = ss.getSheetByName('ツール設定');
+  if (!settingsSheet) throw new Error('ツール設定シートが見つかりません');
+
+  const data     = settingsSheet.getDataRange().getValues();
+  const headers  = data[0];
+  const itemIdx  = headers.indexOf('項目');
+  const valueIdx = headers.indexOf('値');
+  if (itemIdx === -1 || valueIdx === -1) throw new Error('ツール設定シートに「項目」「値」列が見つかりません');
+
+  const accessExpiry  = new Date(Date.now() + expiresIn * 1000);
+  const refreshExpiry = refreshTokenExpiresIn
+    ? new Date(Date.now() + refreshTokenExpiresIn * 1000)
+    : null;
+
+  const writeMap = {
+    'User Token':           accessToken,
+    'Refresh Token':        refreshToken,
+    'Token Expiry':         accessExpiry.toISOString(),
+    'Refresh Token Expiry': refreshExpiry ? refreshExpiry.toISOString() : ''
+  };
+
+  for (let i = 1; i < data.length; i++) {
+    const key = String(data[i][itemIdx] || '').trim();
+    if (writeMap.hasOwnProperty(key)) {
+      settingsSheet.getRange(i + 1, valueIdx + 1).setValue(writeMap[key]);
+      Logger.log('✅ ' + key + ' を更新しました');
+    }
+  }
+}
+
+/**
+ * 認証コード → Access Token / Refresh Token 交換
+ * ツール設定シートから App ID / Cert ID / RuName を取得し、
+ * eBay OAuth エンドポイントにPOSTしてトークンを保存する。
+ *
+ * @param {string} spreadsheetId
+ * @param {string} authorizationCode - リダイレクトURLの code= パラメータ
+ * @returns {Object} eBay レスポンス（access_token, refresh_token, expires_in 等）
+ */
+function exchangeOAuthCode(spreadsheetId, authorizationCode) {
+  const config = getListingToolConfig(spreadsheetId);
+  const appId  = String(config['App ID']  || '').trim();
+  const certId = String(config['Cert ID'] || '').trim();
+  const ruName = String(config['RuName']  || '').trim();
+
+  if (!appId || !certId) throw new Error('ツール設定に App ID / Cert ID が設定されていません');
+  if (!ruName)           throw new Error('ツール設定に RuName が設定されていません');
+
+  const credentials = Utilities.base64Encode(appId + ':' + certId);
+  const payloadStr  =
+    'grant_type=authorization_code' +
+    '&code='         + authorizationCode +
+    '&redirect_uri=' + ruName;
+
+  const response = UrlFetchApp.fetch('https://api.ebay.com/identity/v1/oauth2/token', {
+    method:  'post',
+    headers: {
+      'Content-Type':  'application/x-www-form-urlencoded',
+      'Authorization': 'Basic ' + credentials
+    },
+    payload:            payloadStr,
+    muteHttpExceptions: true
+  });
+
+  if (response.getResponseCode() !== 200) {
+    throw new Error('トークン取得失敗（HTTP ' + response.getResponseCode() + '）:\n' +
+                    response.getContentText().substring(0, 300));
+  }
+
+  const result = JSON.parse(response.getContentText());
+  saveOAuthTokensToSheet(
+    spreadsheetId,
+    result.access_token,
+    result.refresh_token,
+    result.expires_in,
+    result.refresh_token_expires_in
+  );
+  return result;
+}
+
+/**
  * アクセストークンを取得
  * @returns {string|null} アクセストークン
  */

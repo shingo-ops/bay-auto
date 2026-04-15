@@ -293,7 +293,7 @@ function handleConditionTemplateChange(spreadsheetId, sheetName, row, selectedCo
     for (let i = 0; i < data.length; i++) {
       const condition = String(data[i][conditionIdx] || '').trim();
       if (condition === selectedCondition) {
-        templateText = String(data[i][templateIdx] || '').trim();
+        templateText = String(data[i][templateIdx] || '').replace(/<[^>]*>/g, '').trim();
         break;
       }
     }
