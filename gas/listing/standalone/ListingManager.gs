@@ -297,7 +297,8 @@ function generateDescriptionFromTemplate(templateName, conditionDescription, spr
       description = description.replace(/\{説明文\}/g, String(conditionDescription));
       Logger.log('✅ {説明文}を置換しました');
     } else {
-      Logger.log('⚠️ 状態説明が空です。{説明文}はそのまま残ります');
+      description = description.replace(/\{説明文\}/g, '');
+      Logger.log('状態説明が空のため{説明文}を除去します');
     }
 
     Logger.log('生成されたDescription（最初の100文字）: ' + description.substring(0, 100) + '...');
