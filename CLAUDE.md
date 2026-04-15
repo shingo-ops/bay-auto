@@ -22,6 +22,41 @@ Pythonスクリプトを管理するリポジトリ。
 - エラーハンドリングは必ず入れる
 - API認証情報はコードに直接書かない（Secretsを使う）
 
+### 戻り値・エラーハンドリングの原則（CRITICAL）
+
+**全関数の戻り値は必ず `success` 判定を含め、無条件で `success: true` を返さない。**
+
+- オブジェクトを返す関数は `{ success: boolean, ... }` 形式を使う
+- 呼び出し側は必ず `if (!result || !result.success)` を確認してから成功処理に進む
+- 失敗時は `Logger.log('❌ [関数名] 失敗: ' + errorMsg)` を必ず記録する
+- `result.success` チェックなしに `result.itemId` などのフィールドにアクセスしない
+
+```javascript
+// NG: 失敗を無視
+const result = doSomething();
+Logger.log('成功: ' + result.itemId); // result が失敗でも実行される
+
+// OK: 必ず失敗チェックを先に行う
+const result = doSomething();
+if (!result || !result.success) {
+  Logger.log('❌ doSomething 失敗: ' + (result && result.message));
+  return { success: false, message: result && result.message };
+}
+Logger.log('成功: ' + result.itemId);
+```
+
+### 失敗パスの実装チェックリスト
+
+Claude Codeへの実装指示に「`result.success` が false の場合のパスも必ず実装し、Logger.log で記録すること」を毎回含める。
+
+## 出品系変更時のテストチェックリスト
+
+出品ツール（listing）に変更を加えた場合、以下3ケースを必ず動作確認する：
+
+1. **正常系**: 全フィールド入力済みで出品 → 成功メッセージ・Item IDが表示される
+2. **Brand未入力**: Brand列を空にして出品 → eBay APIがFailureを返し、失敗メッセージが表示される（成功メッセージが出ないこと）
+3. **画像なし**: 画像列を全て空にして出品 → EPSアップロードなしで進み、結果（成功 or 失敗）が正しく表示される
+
 ## eBay API仕様
 - Trading API: XML/SOAP形式
 - Metadata API: REST形式
