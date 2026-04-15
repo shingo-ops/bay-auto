@@ -33,11 +33,13 @@ function exportSellstaCsv(spreadsheetId) {
     const config = getEbayConfig();
     const outputDbId = config.outputDbSpreadsheetId;
     if (!outputDbId) {
+      Logger.log('❌ exportSellstaCsv 失敗: 出品DBが設定されていません');
       return { success: false, message: '出品DBが設定されていません。ツール設定を確認してください。' };
     }
     const outputSS    = SpreadsheetApp.openById(outputDbId);
     const outputSheet = outputSS.getSheetByName('出品');
     if (!outputSheet) {
+      Logger.log('❌ exportSellstaCsv 失敗: 出品DBに「出品」シートが見つかりません');
       return { success: false, message: '出品DBに「出品」シートが見つかりません。' };
     }
 
@@ -53,12 +55,14 @@ function exportSellstaCsv(spreadsheetId) {
       'カテゴリID', '状態', '売値($)', '個数', 'Shipping Policy', 'Payment Policy', 'Return Policy'];
     const missingDbCols = requiredDbCols.filter(function(c) { return dbMap[c] === undefined; });
     if (missingDbCols.length > 0) {
+      Logger.log('❌ exportSellstaCsv 失敗: 出品DBに列が見つかりません: ' + missingDbCols.join(', '));
       return { success: false, message: '出品DBに以下の列が見つかりません:\n' + missingDbCols.join('\n') };
     }
 
     // セルスタ_CSVシートのヘッダーチェック
     const csvSheet = outputSS.getSheetByName('セルスタ_CSV');
     if (!csvSheet) {
+      Logger.log('❌ exportSellstaCsv 失敗: 出品DBに「セルスタ_CSV」シートが見つかりません');
       return { success: false, message: '出品DBに「セルスタ_CSV」シートが見つかりません。' };
     }
     const csvLastCol   = csvSheet.getLastColumn();
@@ -69,6 +73,7 @@ function exportSellstaCsv(spreadsheetId) {
     // セルスタ_CSVシートの必須ヘッダー存在チェック
     const missingCsvHeaders = SELLSTA_CSV_HEADERS.filter(function(h) { return csvMap[h] === undefined; });
     if (missingCsvHeaders.length > 0) {
+      Logger.log('❌ exportSellstaCsv 失敗: セルスタ_CSVシートにヘッダーが見つかりません: ' + missingCsvHeaders.join(', '));
       return {
         success: false,
         message: '「セルスタ_CSV」シートに以下のヘッダーが見つかりません:\n' + missingCsvHeaders.join('\n')
@@ -78,6 +83,7 @@ function exportSellstaCsv(spreadsheetId) {
 
     // データ行を全取得（5行目以降）
     if (lastRow < 5) {
+      Logger.log('❌ exportSellstaCsv 失敗: 出品DBにデータがありません（lastRow=' + lastRow + '）');
       return { success: false, message: '出品DBにデータがありません（5行目以降にデータが必要）。' };
     }
     const dataValues  = outputSheet.getRange(5, 1, lastRow - 4, lastCol).getValues();
@@ -103,6 +109,7 @@ function exportSellstaCsv(spreadsheetId) {
 
     Logger.log('対象行数: ' + targetRows.length + '件');
     if (targetRows.length === 0) {
+      Logger.log('❌ exportSellstaCsv 失敗: 出力対象のデータがありません');
       return { success: false, message: '出力対象のデータがありません。\n条件: 出品ステータス=出品中、出品URLあり、CSV列が空' };
     }
 

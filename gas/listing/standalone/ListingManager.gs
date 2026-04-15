@@ -795,6 +795,7 @@ function setupSellerInfo(spreadsheetId) {
     if (ack !== 'Success' && ack !== 'Warning') {
       const errEl  = root.getChild('Errors', ns);
       const errMsg = errEl ? errEl.getChildText('ShortMessage', ns) : '不明なエラー';
+      Logger.log('❌ setupSellerInfo 失敗: eBay APIエラー: ' + errMsg);
       return { success: false, message: 'eBay APIエラー: ' + errMsg };
     }
 
@@ -854,6 +855,7 @@ function setupSellerInfo(spreadsheetId) {
     const ss            = getTargetSpreadsheet(spreadsheetId);
     const settingsSheet = ss.getSheetByName('ツール設定');
     if (!settingsSheet) {
+      Logger.log('❌ setupSellerInfo 失敗: ツール設定シートが見つかりません');
       return { success: false, message: 'ツール設定シートが見つかりません。' };
     }
 
@@ -863,6 +865,7 @@ function setupSellerInfo(spreadsheetId) {
     const valueIdx = headers.findIndex(function(h) { return String(h || '').trim() === '値'; });
 
     if (itemIdx === -1 || valueIdx === -1) {
+      Logger.log('❌ setupSellerInfo 失敗: ツール設定シートに「項目」「値」列が見つかりません');
       return { success: false, message: 'ツール設定シートに「項目」「値」列が見つかりません。' };
     }
 

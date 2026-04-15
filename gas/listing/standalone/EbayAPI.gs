@@ -415,6 +415,7 @@ function uploadImageToEPS(driveUrl, accessToken) {
         errorMessage = errorJson.errors[0].longMessage || errorJson.errors[0].message || errorMessage;
       }
     } catch (e) {
+      Logger.log('⚠️ EPSエラーレスポンスのJSONパースに失敗: ' + e.toString());
       errorMessage += ': ' + errorBody.substring(0, 200);
     }
 
