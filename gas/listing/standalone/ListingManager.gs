@@ -170,7 +170,7 @@ function getValueByHeader(rowData, headerMapping, headerName) {
 function extractItemSpecifics(rowData, headerMapping) {
   const specifics = [];
 
-  for (let i = 1; i <= 20; i++) {
+  for (let i = 1; i <= 30; i++) {
     const nameHeader = '項目名（' + i + '）';
     const valueHeader = '内容（' + i + '）';
 
@@ -536,6 +536,20 @@ function validateListingData(data) {
     if (autoAccept !== null && !isNaN(price) && autoAccept > price) {
       errors.push('承認価格 は即決価格（' + price + '$）以下にしてください');
     }
+  }
+
+  // Brand必須チェック（カテゴリ依存）
+  // ※ validateListingDataにspreadsheetIdが渡っていない場合は
+  //   CURRENT_SPREADSHEET_IDを使用
+  try {
+    var catData = getCategoryMasterDataForListing(CURRENT_SPREADSHEET_ID, String(data.categoryId));
+    if (catData && catData.requiredSpecs && catData.requiredSpecs.indexOf('Brand') !== -1) {
+      if (!data.brand || String(data.brand).trim() === '') {
+        errors.push('Brand（ブランド）が未入力です → Brand列に入力してください');
+      }
+    }
+  } catch(brandCheckErr) {
+    Logger.log('Brand必須チェックエラー（続行）: ' + brandCheckErr.toString());
   }
 
   return errors;
@@ -1387,37 +1401,54 @@ function addItemWithTradingApi(listingData, policyIds) {
     ) +
     '</SellerProfiles>';
 
-  // Item Specifics
+  // ItemSpecifics構築（専用列のBrand/UPC/EAN/MPNも含める）
+  xmlBody += '<ItemSpecifics>';
+
+  // Brand専用列から追加
+  if (listingData.brand && String(listingData.brand).trim() !== '') {
+    xmlBody += '<NameValueList>' +
+      '<Name>Brand</Name>' +
+      '<Value>' + escapeXml(String(listingData.brand).trim()) + '</Value>' +
+      '</NameValueList>';
+  }
+
+  // MPN専用列から追加
+  if (listingData.mpn && String(listingData.mpn).trim() !== '') {
+    xmlBody += '<NameValueList>' +
+      '<Name>MPN</Name>' +
+      '<Value>' + escapeXml(String(listingData.mpn).trim()) + '</Value>' +
+      '</NameValueList>';
+  }
+
+  // UPC専用列から追加
+  if (listingData.upc && String(listingData.upc).trim() !== '') {
+    xmlBody += '<NameValueList>' +
+      '<Name>UPC</Name>' +
+      '<Value>' + escapeXml(String(listingData.upc).trim()) + '</Value>' +
+      '</NameValueList>';
+  }
+
+  // EAN専用列から追加
+  if (listingData.ean && String(listingData.ean).trim() !== '') {
+    xmlBody += '<NameValueList>' +
+      '<Name>EAN</Name>' +
+      '<Value>' + escapeXml(String(listingData.ean).trim()) + '</Value>' +
+      '</NameValueList>';
+  }
+
+  // 項目名/内容列のItem Specifics（専用列で追加済みのものは除外）
+  var excludeFromSpecifics = ['Brand', 'MPN', 'UPC', 'EAN'];
   if (listingData.itemSpecifics && listingData.itemSpecifics.length > 0) {
-    xmlBody += '<ItemSpecifics>';
     listingData.itemSpecifics.forEach(function(spec) {
+      if (excludeFromSpecifics.indexOf(spec.name) !== -1) return;
       xmlBody += '<NameValueList>' +
         '<Name>' + escapeXml(spec.name) + '</Name>' +
         '<Value>' + escapeXml(spec.value) + '</Value>' +
         '</NameValueList>';
     });
-    xmlBody += '</ItemSpecifics>';
   }
 
-  // Product Identifiers (UPC, EAN, MPN, Brand)
-  if (listingData.upc || listingData.ean || listingData.mpn || listingData.brand) {
-    xmlBody += '<ProductListingDetails>';
-    if (listingData.upc) {
-      xmlBody += '<UPC>' + escapeXml(listingData.upc) + '</UPC>';
-    }
-    if (listingData.ean) {
-      xmlBody += '<EAN>' + escapeXml(listingData.ean) + '</EAN>';
-    }
-    if (listingData.brand) {
-      xmlBody += '<BrandMPN>' +
-        '<Brand>' + escapeXml(listingData.brand) + '</Brand>';
-      if (listingData.mpn) {
-        xmlBody += '<MPN>' + escapeXml(listingData.mpn) + '</MPN>';
-      }
-      xmlBody += '</BrandMPN>';
-    }
-    xmlBody += '</ProductListingDetails>';
-  }
+  xmlBody += '</ItemSpecifics>';
 
   // Best Offer
   if (hasBestOffer) {

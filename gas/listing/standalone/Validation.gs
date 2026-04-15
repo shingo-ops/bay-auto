@@ -120,6 +120,9 @@ function translateEbayError(apiErrorMessage, headerMapping) {
   var errors = [];
   var msg = String(apiErrorMessage || '');
 
+  // createListingのプレフィックスを除去してeBayエラー本文だけを抽出
+  msg = msg.replace(/❌.*?\n\n/g, '').trim();
+
   var patterns = [
     {
       pattern: /item specific ([\w\s/]+) is missing/i,
