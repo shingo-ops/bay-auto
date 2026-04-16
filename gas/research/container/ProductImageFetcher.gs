@@ -426,6 +426,12 @@ function extractRakutenImageUrls(productPageUrl) {
   try {
     Logger.log('🛒 楽天市場商品ページから画像を抽出中...');
 
+    // URLからショップIDを取得（JSON画像URLの構築に使用）
+    // 例: https://item.rakuten.co.jp/golf-kace02/xxx/ → shopId = "golf-kace02"
+    const shopIdMatch = productPageUrl.match(/item\.rakuten\.co\.jp\/([^\/]+)\//);
+    const shopId = shopIdMatch ? shopIdMatch[1] : null;
+    Logger.log('ショップID: ' + (shopId || '不明'));
+
     // HTMLを取得
     const response = UrlFetchApp.fetch(productPageUrl, {
       method: 'GET',
@@ -450,66 +456,54 @@ function extractRakutenImageUrls(productPageUrl) {
     const imageUrls = [];
     const seen = new Set();
 
-    // ① img-box内の画像を順番通りに抽出（サイト表示順を保証）
-    // 例: <div class="img-box"> <img src="https://image.rakuten.co.jp/..." alt="商品画像1">
-    //     <div class="img-box"> <a...> <img src="https://image.rakuten.co.jp/..." alt="商品画像2">
-    const imgBoxPattern = /<div class="img-box">\s*(?:<a[^>]*>)?\s*<img src="(https:\/\/image\.rakuten\.co\.jp[^"]+)"/g;
-
-    let match;
-    while ((match = imgBoxPattern.exec(html)) !== null) {
-      const url = match[1];
-      if (!seen.has(url)) {
-        seen.add(url);
-        imageUrls.push(url);
-        Logger.log('  ✓ 画像' + imageUrls.length + ': ' + url);
+    // ① scriptタグ内のJSON "images":[{"type":"CABINET","location":"/xxx_1.jpg"...}] を抽出
+    // 実サイト調査で確認: window変数にSSRで埋め込まれた構造化データ
+    if (shopId) {
+      const imagesJsonPattern = /"images":\[([^\]]+)\]/g;
+      let jsonMatch;
+      while ((jsonMatch = imagesJsonPattern.exec(html)) !== null) {
+        const block = jsonMatch[1];
+        const locationPattern = /"location":"(\/[^"]+\.(jpg|jpeg|png|webp))"/gi;
+        let locMatch;
+        while ((locMatch = locationPattern.exec(block)) !== null) {
+          const location = locMatch[1];
+          // CABINET タイプのみ（商品画像）
+          const fullUrl = 'https://tshop.r10s.jp/' + shopId + '/cabinet' + location;
+          if (!seen.has(fullUrl)) {
+            seen.add(fullUrl);
+            imageUrls.push(fullUrl);
+            Logger.log('  ✓ JSON画像' + imageUrls.length + ': ' + fullUrl);
+          }
+        }
+        if (imageUrls.length > 0) break; // 最初のimages配列で確定
       }
+      Logger.log('① JSON抽出: ' + imageUrls.length + '枚');
     }
 
-    Logger.log('✓ img-box内の画像: ' + imageUrls.length + '枚（表示順）');
-
-    // ② img-boxが見つからない場合のフォールバック: og:image + 連番確認
+    // ② imgタグから tshop.r10s.jp / image.rakuten.co.jp を直接抽出（SSRで存在）
     if (imageUrls.length === 0) {
-      Logger.log('⚠️ img-box内の画像が見つかりません。og:imageを使用します。');
-      const ogImageMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/);
-      if (ogImageMatch) {
-        const ogUrl = ogImageMatch[1];
-        Logger.log('✓ og:image取得: ' + ogUrl);
-
-        // shop.r10s.jp の _N.jpg 連番パターンを検出して複数画像を取得
-        // 例: https://shop.r10s.jp/{shop}/cabinet/{path}_1.jpg → _2.jpg, _3.jpg ...
-        const seqMatch = ogUrl.match(/^(https?:\/\/shop\.r10s\.jp\/.+?)_(\d+)\.(jpg|jpeg|png)(\?.*)?$/i);
-        if (seqMatch) {
-          const baseUrl = seqMatch[1];
-          const ext = seqMatch[3];
-          Logger.log('連番パターン検出: ' + baseUrl + '_N.' + ext + ' — 複数画像を確認中...');
-
-          for (var n = 1; n <= 20; n++) {
-            const candidateUrl = baseUrl + '_' + n + '.' + ext;
-            try {
-              const headRes = UrlFetchApp.fetch(candidateUrl, {
-                method: 'GET',
-                muteHttpExceptions: true,
-                followRedirects: true,
-                headers: { 'User-Agent': 'Mozilla/5.0' }
-              });
-              const headCode = headRes.getResponseCode();
-              if (headCode >= 200 && headCode < 300) {
-                imageUrls.push(candidateUrl);
-                Logger.log('  ✓ 画像' + n + ': ' + candidateUrl);
-              } else {
-                Logger.log('  終端検出 (HTTP ' + headCode + ') — ' + n + '枚で確定');
-                break;
-              }
-              Utilities.sleep(200);
-            } catch (e) {
-              Logger.log('  HEAD確認エラー (n=' + n + '): ' + e.toString());
-              break;
-            }
-          }
-        } else {
-          // 連番パターン外のog:imageはそのまま1枚追加
-          imageUrls.push(ogUrl);
+      Logger.log('② imgタグから直接抽出を試みます...');
+      const imgPattern = /src="(https:\/\/(?:tshop|shop)\.r10s\.jp[^"]+\.(jpg|jpeg|png|webp))"/gi;
+      let imgMatch;
+      while ((imgMatch = imgPattern.exec(html)) !== null) {
+        const url = imgMatch[1];
+        if (!seen.has(url)) {
+          seen.add(url);
+          imageUrls.push(url);
+          Logger.log('  ✓ img画像' + imageUrls.length + ': ' + url);
         }
+        if (imageUrls.length >= 20) break;
+      }
+      Logger.log('② imgタグ抽出: ' + imageUrls.length + '枚');
+    }
+
+    // ③ 最終フォールバック: og:image（一部店舗）
+    if (imageUrls.length === 0) {
+      Logger.log('③ og:imageフォールバック...');
+      const ogMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/);
+      if (ogMatch) {
+        imageUrls.push(ogMatch[1]);
+        Logger.log('  ✓ og:image: ' + ogMatch[1]);
       }
     }
 
@@ -518,17 +512,8 @@ function extractRakutenImageUrls(productPageUrl) {
       return [];
     }
 
-    Logger.log('');
-    Logger.log('--- 画像URL一覧（サイト表示順） ---');
-    for (let i = 0; i < Math.min(imageUrls.length, 10); i++) {
-      Logger.log('  ' + (i + 1) + '. ' + imageUrls[i]);
-    }
-    if (imageUrls.length > 10) {
-      Logger.log('  ... 他 ' + (imageUrls.length - 10) + '件');
-    }
-
-    Logger.log('✅ ' + imageUrls.length + '枚の画像を検出（表示順保証）');
-    return imageUrls.slice(0, 20); // 最大20枚
+    Logger.log('✅ ' + imageUrls.length + '枚の画像を検出');
+    return imageUrls.slice(0, 20);
 
   } catch (error) {
     Logger.log('extractRakutenImageUrlsエラー: ' + error.toString());
