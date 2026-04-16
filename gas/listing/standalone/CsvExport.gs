@@ -138,7 +138,7 @@ function exportSellstaCsv(spreadsheetId) {
 
       // セルスタ_CSV形式の行データを組み立て（ヘッダー名→列番号でセット）
       const rowData = {};
-      rowData['action']           = 'Revise';
+      rowData['action']           = 'Revice';
       rowData['ebay_item_id']     = getCellDisplay(disp, dbMap, 'Item ID');
       rowData['Item title']       = getCellDisplay(disp, dbMap, 'タイトル');
       imageUrls.forEach(function(url, i) {

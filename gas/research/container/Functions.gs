@@ -599,6 +599,17 @@ function onListingButtonPolicy3() {
  * @param {string} policyLabel ポリシー名（表示用：Expedited, Economy, 書状）
  */
 function transferListingDataWithPolicy(policyRow, policyLabel) {
+  // 連打防止: スクリプトロックを即時取得
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(0)) {
+    SpreadsheetApp.getUi().alert(
+      '⚠️ 処理中',
+      '現在、別の出品処理を実行中です。\n完了までお待ちください。',
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+    return;
+  }
+
   // エラー時のクリーンアップ用の変数
   let reservedRow = null;
   let reservedSheet = null;
@@ -921,6 +932,8 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
     }
 
     SpreadsheetApp.getUi().alert('転記エラー:\n\n' + error.toString());
+  } finally {
+    lock.releaseLock();
   }
 }
 
