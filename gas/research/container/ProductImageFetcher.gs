@@ -4,6 +4,48 @@
  */
 
 /**
+ * HTTP GETを最大maxRetries回リトライして取得
+ * 500系エラーの場合は2秒待機後リトライ
+ *
+ * @param {string} url 取得先URL
+ * @param {Object} options UrlFetchApp オプション
+ * @param {number} maxRetries 最大リトライ回数（デフォルト3）
+ * @returns {HTTPResponse} 成功レスポンス
+ */
+function fetchWithRetry(url, options, maxRetries) {
+  maxRetries = maxRetries || 3;
+  var lastError = null;
+
+  for (var i = 0; i < maxRetries; i++) {
+    try {
+      var response = UrlFetchApp.fetch(url, options);
+      var code = response.getResponseCode();
+
+      if (code >= 200 && code < 300) {
+        return response;
+      }
+
+      Logger.log('  ⚠️ HTTP ' + code + ' (試行 ' + (i + 1) + '/' + maxRetries + ')');
+
+      if (code >= 500 && i < maxRetries - 1) {
+        Utilities.sleep(2000);
+        continue;
+      }
+
+      lastError = new Error('HTTP ' + code + ': ページ取得失敗');
+    } catch (e) {
+      lastError = e;
+      if (i < maxRetries - 1) {
+        Logger.log('  ⚠️ エラー (試行 ' + (i + 1) + '/' + maxRetries + '): ' + e.toString());
+        Utilities.sleep(2000);
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+/**
  * 商品ページURLから画像URLを抽出して配列で返す
  *
  * @param {string} productPageUrl 商品ページURL
@@ -248,8 +290,8 @@ function extractYahooFleaMarketImageUrls(productPageUrl) {
   try {
     Logger.log('🛍️ Yahoo!フリマ商品ページから画像を抽出中...');
 
-    // HTMLを取得
-    const response = UrlFetchApp.fetch(productPageUrl, {
+    // HTMLを取得（500系エラー時は最大3回リトライ）
+    const fetchOptions = {
       method: 'GET',
       muteHttpExceptions: true,
       followRedirects: true,
@@ -258,8 +300,8 @@ function extractYahooFleaMarketImageUrls(productPageUrl) {
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3'
       }
-    });
-
+    };
+    const response = fetchWithRetry(productPageUrl, fetchOptions, 3);
     const responseCode = response.getResponseCode();
     if (responseCode !== 200) {
       Logger.log('HTTP ' + responseCode + ': ページ取得失敗');
@@ -425,13 +467,49 @@ function extractRakutenImageUrls(productPageUrl) {
 
     Logger.log('✓ img-box内の画像: ' + imageUrls.length + '枚（表示順）');
 
-    // ② img-boxが見つからない場合のフォールバック: og:image
+    // ② img-boxが見つからない場合のフォールバック: og:image + 連番確認
     if (imageUrls.length === 0) {
       Logger.log('⚠️ img-box内の画像が見つかりません。og:imageを使用します。');
       const ogImageMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/);
       if (ogImageMatch) {
-        imageUrls.push(ogImageMatch[1]);
-        Logger.log('✓ og:image取得: ' + ogImageMatch[1]);
+        const ogUrl = ogImageMatch[1];
+        Logger.log('✓ og:image取得: ' + ogUrl);
+
+        // shop.r10s.jp の _N.jpg 連番パターンを検出して複数画像を取得
+        // 例: https://shop.r10s.jp/{shop}/cabinet/{path}_1.jpg → _2.jpg, _3.jpg ...
+        const seqMatch = ogUrl.match(/^(https?:\/\/shop\.r10s\.jp\/.+?)_(\d+)\.(jpg|jpeg|png)(\?.*)?$/i);
+        if (seqMatch) {
+          const baseUrl = seqMatch[1];
+          const ext = seqMatch[3];
+          Logger.log('連番パターン検出: ' + baseUrl + '_N.' + ext + ' — 複数画像を確認中...');
+
+          for (var n = 1; n <= 20; n++) {
+            const candidateUrl = baseUrl + '_' + n + '.' + ext;
+            try {
+              const headRes = UrlFetchApp.fetch(candidateUrl, {
+                method: 'GET',
+                muteHttpExceptions: true,
+                followRedirects: true,
+                headers: { 'User-Agent': 'Mozilla/5.0' }
+              });
+              const headCode = headRes.getResponseCode();
+              if (headCode >= 200 && headCode < 300) {
+                imageUrls.push(candidateUrl);
+                Logger.log('  ✓ 画像' + n + ': ' + candidateUrl);
+              } else {
+                Logger.log('  終端検出 (HTTP ' + headCode + ') — ' + n + '枚で確定');
+                break;
+              }
+              Utilities.sleep(200);
+            } catch (e) {
+              Logger.log('  HEAD確認エラー (n=' + n + '): ' + e.toString());
+              break;
+            }
+          }
+        } else {
+          // 連番パターン外のog:imageはそのまま1枚追加
+          imageUrls.push(ogUrl);
+        }
       }
     }
 
