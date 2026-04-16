@@ -846,6 +846,16 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
           const timeStr = Utilities.formatDate(now, Session.getScriptTimeZone(), 'HHmmss');
           const siteName = getSiteNameFromImageUrl(productPageUrl.toString()); // 商品ページURLからサイト名を判定
 
+          // リサーチシートの「エラー」列を特定（13行目ヘッダー、14行目に書き込み）
+          const researchLastCol = researchSheet.getLastColumn();
+          const researchHeaderRow13 = researchSheet.getRange(13, 1, 1, researchLastCol).getValues()[0];
+          const errorColIndex = researchHeaderRow13.indexOf('エラー');
+          const errorCol = errorColIndex !== -1 ? errorColIndex + 1 : null;
+          if (!errorCol) {
+            Logger.log('⚠️ リサーチシート13行目に「エラー」ヘッダーが見つかりません');
+          }
+          const errorMessages = []; // 画像処理中のエラーを集約
+
           // 各画像をダウンロード
           const savedCount = Math.min(imageUrls.length, 23); // 最大23枚
           SpreadsheetApp.getActiveSpreadsheet().toast(savedCount + '枚の画像をダウンロード中...', 'eBay 出品', 5);
@@ -859,7 +869,7 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
 
             const imageResult = downloadAndSaveImage(imageUrl, imageFolderUrl, baseFileName);
 
-            // 画像列を特定（成功・失敗両方で使用）
+            // 画像列を特定
             const imageColumnKey = 'IMAGE_' + (i + 1);
             const imageHeaderName = LISTING_COLUMNS[imageColumnKey] ? LISTING_COLUMNS[imageColumnKey].header : null;
             const imageCol = imageHeaderName ? getColumnByHeader(headerMapping, imageHeaderName) : null;
@@ -875,15 +885,22 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
               }
             } else {
               Logger.log('❌ 画像' + (i + 1) + 'のダウンロードに失敗: ' + imageResult.message);
-              // 失敗理由をシートに記録（空欄のまま見過ごされることを防止）
-              if (imageCol) {
-                listingSheet.getRange(newRow, imageCol).setValue('❌ DL失敗: ' + imageResult.message);
-              }
+              errorMessages.push('画像' + (i + 1) + ': ' + imageResult.message);
             }
 
             // レート制限対策
             if (i < savedCount - 1) {
               Utilities.sleep(500);
+            }
+          }
+
+          // エラーをリサーチシート「エラー」列14行目に書き込み（成功時はクリア）
+          if (errorCol) {
+            if (errorMessages.length > 0) {
+              researchSheet.getRange(14, errorCol).setValue('❌ DL失敗:\n' + errorMessages.join('\n'));
+              Logger.log('❌ 画像DL失敗をリサーチシートに記録: ' + errorMessages.length + '件');
+            } else {
+              researchSheet.getRange(14, errorCol).clearContent();
             }
           }
 
