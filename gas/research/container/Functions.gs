@@ -9,6 +9,63 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /**
+ * Item URLとスペックURLのカテゴリID整合性チェック
+ * 不一致の場合はui.promptで 1 / 2 の選択を求める
+ * itemInfo / specInfo の category フィールドをin-placeで書き換えて揃える
+ *
+ * @param {Object} itemInfo  {category: {categoryId, categoryName}, ...}
+ * @param {Object} specInfo  {category: {categoryId, categoryName}, ...}
+ * @returns {boolean} true=続行, false=キャンセル（転記中止）
+ */
+function checkCategoryMismatch(itemInfo, specInfo) {
+  if (!itemInfo || !itemInfo.category || !specInfo || !specInfo.category) {
+    Logger.log('⚠️ [カテゴリチェック] カテゴリ情報が不完全のためスキップ');
+    return true;
+  }
+
+  const itemCatId = itemInfo.category.categoryId;
+  const specCatId = specInfo.category.categoryId;
+
+  Logger.log('[カテゴリチェック] Item=' + itemCatId + ' / Spec=' + specCatId);
+
+  if (!itemCatId || !specCatId || itemCatId === specCatId) {
+    Logger.log('✅ [カテゴリチェック] 一致: ' + itemCatId);
+    return true;
+  }
+
+  const promptUi = SpreadsheetApp.getUi();
+  const promptRes = promptUi.prompt(
+    '⚠️ カテゴリ不一致',
+    'Item URL: ' + itemCatId + ' (' + (itemInfo.category.categoryName || '') + ')\n' +
+    'スペックURL: ' + specCatId + ' (' + (specInfo.category.categoryName || '') + ')\n\n' +
+    '1 → Item URLのカテゴリを使用\n' +
+    '2 → スペックURLのカテゴリを使用\n\n' +
+    '番号を入力してください:',
+    promptUi.ButtonSet.OK_CANCEL
+  );
+
+  if (promptRes.getSelectedButton() === promptUi.Button.CANCEL) {
+    Logger.log('[カテゴリチェック] ユーザーがキャンセル');
+    return false;
+  }
+
+  const choice = promptRes.getResponseText().trim();
+  if (choice === '1') {
+    Logger.log('[カテゴリチェック] Item URLを採用: ' + itemCatId);
+    specInfo.category.categoryId   = itemCatId;
+    specInfo.category.categoryName = itemInfo.category.categoryName;
+  } else if (choice === '2') {
+    Logger.log('[カテゴリチェック] スペックURLを採用: ' + specCatId);
+    itemInfo.category.categoryId   = specCatId;
+    itemInfo.category.categoryName = specInfo.category.categoryName;
+  } else {
+    promptUi.alert('1 または 2 を入力してください。転記を中止します。');
+    return false;
+  }
+  return true;
+}
+
+/**
  * 指定列で空白の最初の行を探す
  *
  * @param {Sheet} sheet シート
@@ -237,38 +294,7 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
     condition: researchSheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.CONDITION.col).getValue()
   };
 
-  // カテゴリIDの整合性チェック: Item URLとスペックURLのカテゴリIDが異なる場合は警告して中止
-  Logger.log('カテゴリID整合性チェック開始...');
-  if (itemInfo && itemInfo.category && specInfo && specInfo.category) {
-    const itemCategoryId = itemInfo.category.categoryId;
-    const specCategoryId = specInfo.category.categoryId;
-
-    Logger.log('  - Item URLカテゴリID: ' + itemCategoryId);
-    Logger.log('  - スペックURLカテゴリID: ' + specCategoryId);
-
-    if (itemCategoryId && specCategoryId && itemCategoryId !== specCategoryId) {
-      const confirmMsg = '⚠️ カテゴリIDが一致しません。\n\n' +
-                         '【Item URL】\n' +
-                         '  ID: ' + itemCategoryId + '  ' + (itemInfo.category.categoryName || '') + '\n\n' +
-                         '【スペックURL】\n' +
-                         '  ID: ' + specCategoryId + '  ' + (specInfo.category.categoryName || '') + '\n\n' +
-                         'スペックURLのカテゴリ（' + specCategoryId + '）を採用して出品しますか？\n' +
-                         'キャンセルすると転記を中止します。';
-
-      Logger.log('⚠️ カテゴリID不一致: Item=' + itemCategoryId + ' / Spec=' + specCategoryId);
-      const uiForCategory = SpreadsheetApp.getUi();
-      const categoryResponse = uiForCategory.alert('カテゴリID確認', confirmMsg, uiForCategory.ButtonSet.OK_CANCEL);
-      if (categoryResponse !== uiForCategory.Button.OK) {
-        Logger.log('カテゴリID不一致: ユーザーがキャンセルしたため転記を中止');
-        throw new Error('カテゴリID不一致のため転記を中止しました');
-      }
-      Logger.log('✅ スペックURLのカテゴリIDを採用して続行: ' + specCategoryId);
-    }
-
-    Logger.log('✅ カテゴリIDが一致しています: ' + itemCategoryId);
-  } else {
-    Logger.log('⚠️ カテゴリ情報が不完全なため、整合性チェックをスキップします');
-  }
+  // カテゴリID整合性チェックは呼び出し元（transferListingDataWithPolicy）で実施済み
 
   // headerMappingから最大列数を決定
   Logger.log('headerMapping values: ' + JSON.stringify(Object.values(headerMapping).slice(0, 10)));
@@ -694,6 +720,7 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
     SpreadsheetApp.getActiveSpreadsheet().toast('出品データを準備中...', '出品 (' + policyLabel + ')', 10);
 
     let itemInfo, specInfo;
+    let needsCacheSave = false;
     const cacheRow = getCacheRow2();
     const currentItemUrl = normalizeCacheUrl(itemUrl.toString());
 
@@ -720,44 +747,16 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
 
       itemInfo = getProductInfoFromUrl(itemUrl.toString());
       specInfo  = getProductInfoFromUrl(specUrl.toString());
+      needsCacheSave = true;
+    }
 
-      // Item URLとスペックURLのカテゴリが異なる場合はどちらを使うか確認
-      const itemCatId = itemInfo && itemInfo.category ? itemInfo.category.categoryId : '';
-      const specCatId = specInfo && specInfo.category ? specInfo.category.categoryId : '';
+    // カテゴリID整合性チェック（統一ダイアログ）
+    if (!checkCategoryMismatch(itemInfo, specInfo)) {
+      return; // ユーザーキャンセル
+    }
 
-      if (itemCatId && specCatId && itemCatId !== specCatId) {
-        const promptUi = SpreadsheetApp.getUi();
-        const promptRes = promptUi.prompt(
-          '⚠️ カテゴリ不一致',
-          'Item URL: ' + itemCatId + ' (' + (itemInfo.category.categoryName || '') + ')\n' +
-          'スペックURL: ' + specCatId + ' (' + (specInfo.category.categoryName || '') + ')\n\n' +
-          '1 → Item URLのカテゴリを使用\n' +
-          '2 → スペックURLのカテゴリを使用\n\n' +
-          '番号を入力してください:',
-          promptUi.ButtonSet.OK_CANCEL
-        );
-
-        if (promptRes.getSelectedButton() === promptUi.Button.CANCEL) {
-          Logger.log('[転記] カテゴリ不一致: ユーザーがキャンセル');
-          return;
-        }
-
-        const choice = promptRes.getResponseText().trim();
-        if (choice === '1') {
-          Logger.log('[転記] カテゴリ: Item URLを採用: ' + itemCatId);
-          specInfo.category.categoryId   = itemCatId;
-          specInfo.category.categoryName = itemInfo.category.categoryName;
-        } else if (choice === '2') {
-          Logger.log('[転記] カテゴリ: スペックURLを採用: ' + specCatId);
-          itemInfo.category.categoryId   = specCatId;
-          itemInfo.category.categoryName = specInfo.category.categoryName;
-        } else {
-          promptUi.alert('1 または 2 を入力してください。転記を中止します。');
-          return;
-        }
-      }
-
-      // キャッシュを新URLのデータで更新
+    // APIフォールバック時はキャッシュを新URLのデータで更新
+    if (needsCacheSave) {
       saveCacheEntry(itemUrl.toString(), itemInfo);
     }
 
