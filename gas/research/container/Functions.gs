@@ -695,7 +695,10 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
 
     let itemInfo, specInfo;
     const cacheRow = getCacheRow2();
-    if (cacheRow) {
+    const currentItemUrl = normalizeCacheUrl(itemUrl.toString());
+
+    if (cacheRow && normalizeCacheUrl(cacheRow.itemUrl) === currentItemUrl) {
+      // URL一致 → キャッシュヒット
       Logger.log('[転記] _cache ヒット: ' + cacheRow.itemUrl);
       const fromCache = {
         item:      { categoryId: cacheRow.categoryId, categoryPath: cacheRow.categoryName },
@@ -708,10 +711,54 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
       itemInfo = fromCache;
       specInfo  = fromCache;
     } else {
-      // _cache が空の場合のみ API を呼び出す
-      Logger.log('[転記] _cache ミス: API フォールバック');
+      // URLミスマッチ or キャッシュなし → APIフォールバック
+      if (cacheRow) {
+        Logger.log('[転記] _cache URLミスマッチ（' + cacheRow.itemUrl + ' vs ' + itemUrl + '）: APIフォールバック');
+      } else {
+        Logger.log('[転記] _cache ミス: APIフォールバック');
+      }
+
       itemInfo = getProductInfoFromUrl(itemUrl.toString());
       specInfo  = getProductInfoFromUrl(specUrl.toString());
+
+      // Item URLとスペックURLのカテゴリが異なる場合はどちらを使うか確認
+      const itemCatId = itemInfo && itemInfo.category ? itemInfo.category.categoryId : '';
+      const specCatId = specInfo && specInfo.category ? specInfo.category.categoryId : '';
+
+      if (itemCatId && specCatId && itemCatId !== specCatId) {
+        const promptUi = SpreadsheetApp.getUi();
+        const promptRes = promptUi.prompt(
+          '⚠️ カテゴリ不一致',
+          'Item URL: ' + itemCatId + ' (' + (itemInfo.category.categoryName || '') + ')\n' +
+          'スペックURL: ' + specCatId + ' (' + (specInfo.category.categoryName || '') + ')\n\n' +
+          '1 → Item URLのカテゴリを使用\n' +
+          '2 → スペックURLのカテゴリを使用\n\n' +
+          '番号を入力してください:',
+          promptUi.ButtonSet.OK_CANCEL
+        );
+
+        if (promptRes.getSelectedButton() === promptUi.Button.CANCEL) {
+          Logger.log('[転記] カテゴリ不一致: ユーザーがキャンセル');
+          return;
+        }
+
+        const choice = promptRes.getResponseText().trim();
+        if (choice === '1') {
+          Logger.log('[転記] カテゴリ: Item URLを採用: ' + itemCatId);
+          specInfo.category.categoryId   = itemCatId;
+          specInfo.category.categoryName = itemInfo.category.categoryName;
+        } else if (choice === '2') {
+          Logger.log('[転記] カテゴリ: スペックURLを採用: ' + specCatId);
+          itemInfo.category.categoryId   = specCatId;
+          itemInfo.category.categoryName = specInfo.category.categoryName;
+        } else {
+          promptUi.alert('1 または 2 を入力してください。転記を中止します。');
+          return;
+        }
+      }
+
+      // キャッシュを新URLのデータで更新
+      saveCacheEntry(itemUrl.toString(), itemInfo);
     }
 
     // 転記先スプレッドシートを開く
