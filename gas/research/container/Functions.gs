@@ -822,11 +822,16 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
       }
     });
 
+    // 転記前: コンディション列の旧データ入力規則をクリア（前商品の規則が残存していると書き込みが拒否される）
+    const conditionColNum = getColumnByHeader(headerMapping, LISTING_COLUMNS.CONDITION.header);
+    if (conditionColNum) {
+      listingSheet.getRange(newRow, conditionColNum).clearDataValidations();
+    }
+
     // データを転記
     listingSheet.getRange(newRow, 1, 1, transferData.length).setValues([transferData]);
 
     // 出品シートのコンディション列にプルダウンを設定（選択済み値はsetValuesで転記済み）
-    const conditionColNum = getColumnByHeader(headerMapping, LISTING_COLUMNS.CONDITION.header);
     if (conditionColNum) {
       try {
         const conditionRule = buildConditionValidationRule(String(specInfo.category.categoryId || ''));

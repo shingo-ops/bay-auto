@@ -253,7 +253,7 @@ function buildConditionValidationRule(categoryId) {
   Logger.log('[buildConditionValidationRule] カテゴリ=' + categoryId + ' グループ=' + group + ' 選択肢=' + displayOptions.length + '件');
   return SpreadsheetApp.newDataValidation()
     .requireValueInList(displayOptions, true)
-    .setAllowInvalid(false)
+    .setAllowInvalid(true)  // 入力を拒否せず警告のみ（転記時のエラー防止）
     .build();
 }
 
