@@ -4,6 +4,84 @@
  * 汎用的なヘルパー関数を定義
  */
 
+// サイトマスタキャッシュ（スクリプト実行内で再利用）
+var _siteMasterCache = null;
+
+/**
+ * ツール設定シートからサイトマスタを読み込む（実行内キャッシュ付き）
+ * 「サイト名」「ドメイン」のヘッダー行を動的に検索
+ *
+ * @returns {Array<{name: string, domain: string}>} ドメイン長降順（具体的なものを先に判定するため）
+ */
+function getSiteMaster() {
+  if (_siteMasterCache !== null) return _siteMasterCache;
+
+  const settingsSheet = ss.getSheetByName(SHEET_NAMES.SETTINGS);
+  if (!settingsSheet) {
+    Logger.log('⚠️ [getSiteMaster] ツール設定シートが見つかりません');
+    _siteMasterCache = [];
+    return _siteMasterCache;
+  }
+
+  const data = settingsSheet.getDataRange().getValues();
+  _siteMasterCache = [];
+
+  // 「サイト名」「ドメイン」が同じ行に揃っているヘッダー行を動的に探す
+  let startRow  = -1;
+  let nameCol   = -1;
+  let domainCol = -1;
+
+  for (let i = 0; i < data.length; i++) {
+    let nc = -1;
+    let dc = -1;
+    for (let j = 0; j < data[i].length; j++) {
+      const cell = String(data[i][j] || '').trim();
+      if (cell === 'サイト名') nc = j;
+      if (cell === 'ドメイン')  dc = j;
+    }
+    if (nc !== -1 && dc !== -1) {
+      startRow  = i + 1;
+      nameCol   = nc;
+      domainCol = dc;
+      break;
+    }
+  }
+
+  if (startRow === -1) {
+    Logger.log('⚠️ [getSiteMaster] ツール設定シートにサイト名/ドメインマッピングが見つかりません');
+    return _siteMasterCache;
+  }
+
+  for (let i = startRow; i < data.length; i++) {
+    const name   = String(data[i][nameCol]   || '').trim();
+    const domain = String(data[i][domainCol] || '').trim().toLowerCase();
+    if (!name || !domain) break; // 空行で終了
+    _siteMasterCache.push({ name: name, domain: domain });
+  }
+
+  // ドメインが長い順にソート（より具体的なドメインを先にヒットさせる）
+  _siteMasterCache.sort(function(a, b) { return b.domain.length - a.domain.length; });
+
+  Logger.log('[getSiteMaster] サイトマスタ読み込み: ' + _siteMasterCache.length + '件');
+  return _siteMasterCache;
+}
+
+/**
+ * URLからサイト名を判定（ツール設定シートのサイトマスタを使用・indexOf部分一致）
+ *
+ * @param {string} url 商品ページURL または 画像URL
+ * @returns {string} サイト名（マスタ未登録の場合は '不明'）
+ */
+function getSiteName(url) {
+  if (!url) return '不明';
+  const u = url.toString().toLowerCase();
+  const master = getSiteMaster();
+  for (let i = 0; i < master.length; i++) {
+    if (u.indexOf(master[i].domain) !== -1) return master[i].name;
+  }
+  return '不明';
+}
+
 /**
  * 日付を yyyy-MM-dd HH:mm:ss 形式でフォーマット
  *
@@ -238,48 +316,14 @@ function randomDelay(minMs, maxMs) {
 }
 
 /**
- * URLから取得元サイト名を判定（商品ページURL・画像URL両対応）
- * 全判定に indexOf（部分一致）を使用
- * 注意: Yahoo系は特定サービス（paypayfleamarket → auctions → shopping）を先に判定すること
+ * URLから取得元サイト名を判定（後方互換ラッパー）
+ * 実処理は getSiteName() に委譲
  *
  * @param {string} imageUrl 商品ページURL または 画像URL
- * @returns {string} サイト名（楽天, メルカリ, Amazon, Yahoo!フリマ, ヤフオク, Yahoo!ショッピング, eBay, オフモール, 駿河屋, デジマート, 不明）
+ * @returns {string} サイト名
  */
 function getSiteNameFromImageUrl(imageUrl) {
-  if (!imageUrl) return '不明';
-
-  const url = imageUrl.toString().toLowerCase();
-
-  // 楽天
-  if (url.indexOf('rakuten.co.jp') !== -1 || url.indexOf('r10s.jp') !== -1) return '楽天';
-
-  // メルカリ
-  if (url.indexOf('mercdn.net') !== -1 || url.indexOf('mercari.com') !== -1) return 'メルカリ';
-
-  // Amazon
-  if (url.indexOf('amazon.co.jp') !== -1 || url.indexOf('amazon.com') !== -1 ||
-      url.indexOf('m.media-amazon.com') !== -1 || url.indexOf('images-na.ssl-images-amazon.com') !== -1) return 'Amazon';
-
-  // Yahoo系: 特定サービスを先に判定（具体的なドメインから順に）
-  if (url.indexOf('paypayfleamarket.yahoo.co.jp') !== -1) return 'Yahoo!フリマ';
-  if (url.indexOf('auctions.yahoo.co.jp') !== -1 || url.indexOf('auctions.c.yimg.jp') !== -1) return 'ヤフオク';
-  if (url.indexOf('store.shopping.yahoo.co.jp') !== -1 || url.indexOf('shopping.yahoo.co.jp') !== -1 ||
-      url.indexOf('item-shopping.c.yimg.jp') !== -1) return 'Yahoo!ショッピング';
-  if (url.indexOf('yahoo.co.jp') !== -1 || url.indexOf('yimg.jp') !== -1) return 'ヤフオク'; // フォールバック
-
-  // eBay
-  if (url.indexOf('ebayimg.com') !== -1 || url.indexOf('ebay.com') !== -1) return 'eBay';
-
-  // オフモール（ハードオフ・オフハウス等）
-  if (url.indexOf('imageflux.jp') !== -1 || url.indexOf('netmall.hardoff.co.jp') !== -1) return 'オフモール';
-
-  // 駿河屋
-  if (url.indexOf('suruga-ya.jp') !== -1) return '駿河屋';
-
-  // デジマート
-  if (url.indexOf('digimart.net') !== -1) return 'デジマート';
-
-  return '不明';
+  return getSiteName(imageUrl);
 }
 
 /**
@@ -412,23 +456,18 @@ function getPurchaseSourceMappings() {
       }
     }
 
-    // 「仕入元」列と「仕入元URL」列のインデックスを取得
-    // 複数のヘッダー名候補に対応
-    let purchaseSourceColIndex = columnMap['仕入元'];
-    if (purchaseSourceColIndex === undefined) {
-      purchaseSourceColIndex = columnMap['仕入元名'];
-    }
+    // 「サイト名」「ドメイン」列のインデックスを取得（旧ヘッダー名もフォールバックとして対応）
+    let purchaseSourceColIndex = columnMap['サイト名'];
+    if (purchaseSourceColIndex === undefined) purchaseSourceColIndex = columnMap['仕入元'];
+    if (purchaseSourceColIndex === undefined) purchaseSourceColIndex = columnMap['仕入元名'];
 
-    let purchaseSourceUrlColIndex = columnMap['仕入元URL'];
-    if (purchaseSourceUrlColIndex === undefined) {
-      purchaseSourceUrlColIndex = columnMap['URL'];
-    }
-    if (purchaseSourceUrlColIndex === undefined) {
-      purchaseSourceUrlColIndex = columnMap['仕入元トップページURL'];
-    }
+    let purchaseSourceUrlColIndex = columnMap['ドメイン'];
+    if (purchaseSourceUrlColIndex === undefined) purchaseSourceUrlColIndex = columnMap['仕入元URL'];
+    if (purchaseSourceUrlColIndex === undefined) purchaseSourceUrlColIndex = columnMap['URL'];
+    if (purchaseSourceUrlColIndex === undefined) purchaseSourceUrlColIndex = columnMap['仕入元トップページURL'];
 
     if (purchaseSourceColIndex === undefined || purchaseSourceUrlColIndex === undefined) {
-      Logger.log('仕入元マッピング列が見つかりません（「仕入元」「仕入元URL」列が必要です）');
+      Logger.log('仕入元マッピング列が見つかりません（「サイト名」「ドメイン」列が必要です）');
       return [];
     }
 
