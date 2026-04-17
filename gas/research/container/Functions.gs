@@ -345,14 +345,10 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
   // メモ
   setValueByHeader(LISTING_COLUMNS.MEMO.header, priceInfo.memo);
 
-  // 仕入元マッピングを1回だけ取得して3つのURLに使い回す
-  const srcMappings_ = getPurchaseSourceMappings();
+  // URLからサイト名を解決（ツール設定シートのサイトマスタを使用）
   const resolveSourceName_ = function(url) {
     if (!url || typeof url !== 'string') return '';
-    for (var _i = 0; _i < srcMappings_.length; _i++) {
-      if (url.indexOf(srcMappings_[_i].url) === 0) return srcMappings_[_i].name;
-    }
-    return getSiteNameFromImageUrl(url);
+    return getSiteName(url) || '不明';
   };
 
   // 仕入元①とURL①
@@ -895,7 +891,7 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
           const now = new Date();
           const dateStr = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd');
           const timeStr = Utilities.formatDate(now, Session.getScriptTimeZone(), 'HHmmss');
-          const siteName = getSiteNameFromImageUrl(productPageUrl.toString()); // 商品ページURLからサイト名を判定
+          const siteName = getSiteName(productPageUrl.toString()); // 商品ページURLからサイト名を判定
 
           // リサーチシートの「エラー」列を特定（13行目ヘッダー、14行目に書き込み）
           const researchLastCol = researchSheet.getLastColumn();

@@ -315,16 +315,6 @@ function randomDelay(minMs, maxMs) {
   Utilities.sleep(delay);
 }
 
-/**
- * URLから取得元サイト名を判定（後方互換ラッパー）
- * 実処理は getSiteName() に委譲
- *
- * @param {string} imageUrl 商品ページURL または 画像URL
- * @returns {string} サイト名
- */
-function getSiteNameFromImageUrl(imageUrl) {
-  return getSiteName(imageUrl);
-}
 
 /**
  * リサーチシートからポリシー別のデータを取得
@@ -515,9 +505,9 @@ function getPurchaseSourceNameFromUrl(url) {
     }
   }
 
-  // 見つからない場合は従来の判定ロジックにフォールバック
-  Logger.log('マッピングに一致しないため、従来ロジックで判定: ' + url);
-  return getSiteNameFromImageUrl(url);
+  // 見つからない場合は getSiteName() にフォールバック
+  Logger.log('マッピングに一致しないため getSiteName() で判定: ' + url);
+  return getSiteName(url);
 }
 
 /**
