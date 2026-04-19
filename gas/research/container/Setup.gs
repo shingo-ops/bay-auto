@@ -156,12 +156,24 @@ function completeInitialSetup() {
       }
     }
 
+    // ステップ5: ログクリーンアップトリガー登録（重複防止付きなので毎回実行）
+    let logTriggerMessage = '';
+    try {
+      Logger.log('ステップ5: ログクリーンアップトリガーを登録します');
+      setupLogCleanupTriggerSilent();
+      logTriggerMessage = '✅ ログ自動クリーンアップ登録完了';
+      Logger.log('ステップ5完了: ログクリーンアップトリガー登録成功');
+    } catch (error) {
+      logTriggerMessage = '⚠️ ログクリーンアップトリガー登録失敗';
+      Logger.log('ステップ5エラー: ' + error.toString());
+    }
+
     // 完了メッセージ
     let completionMessage = '';
     if (isFirstTime) {
-      completionMessage = '✅ 権限承認完了\n✅ 設定検証完了\n' + ebayApiMessage + '\n' + triggerMessage + '\n\n' + validationMessage;
+      completionMessage = '✅ 権限承認完了\n✅ 設定検証完了\n' + ebayApiMessage + '\n' + triggerMessage + '\n' + logTriggerMessage + '\n\n' + validationMessage;
     } else {
-      completionMessage = '✅ 設定検証完了\n' + ebayApiMessage + '\n\n' + validationMessage;
+      completionMessage = '✅ 設定検証完了\n' + ebayApiMessage + '\n' + logTriggerMessage + '\n\n' + validationMessage;
     }
 
     ui.alert(

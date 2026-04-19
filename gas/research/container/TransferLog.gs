@@ -146,10 +146,23 @@ function cleanupOldLogs() {
 }
 
 /**
- * 毎日AM3時に cleanupOldLogs を実行するトリガーをセットアップ
+ * 毎日AM3時に cleanupOldLogs を実行するトリガーをセットアップ（alert付き・手動実行用）
  * 重複登録を防ぐため、既存の同名トリガーは削除してから登録
  */
 function setupLogCleanupTrigger() {
+  setupLogCleanupTriggerSilent();
+  SpreadsheetApp.getUi().alert(
+    'トリガー設定完了',
+    '転記ログの自動クリーンアップ（毎日AM3時）を設定しました。',
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
+}
+
+/**
+ * 毎日AM3時に cleanupOldLogs を実行するトリガーをセットアップ（alertなし・completeInitialSetup統合用）
+ * 重複登録を防ぐため、既存の同名トリガーは削除してから登録
+ */
+function setupLogCleanupTriggerSilent() {
   // 既存のcleanupOldLogsトリガーを削除
   ScriptApp.getProjectTriggers().forEach(function(trigger) {
     if (trigger.getHandlerFunction() === 'cleanupOldLogs') {
@@ -166,9 +179,4 @@ function setupLogCleanupTrigger() {
     .create();
 
   Logger.log('cleanupOldLogsトリガーを設定しました（毎日AM3時）');
-  SpreadsheetApp.getUi().alert(
-    'トリガー設定完了',
-    '転記ログの自動クリーンアップ（毎日AM3時）を設定しました。',
-    SpreadsheetApp.getUi().ButtonSet.OK
-  );
 }
