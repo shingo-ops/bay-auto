@@ -636,6 +636,7 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
   let reservedRow = null;
   let reservedSheet = null;
   let reservedSkuCol = null;
+  let logRow = null;
 
   try {
     Logger.log('===== 転記開始 =====');
@@ -824,7 +825,9 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
       listingSheet.getRange(newRow, conditionColNum).clearDataValidations();
     }
 
-    // データを転記
+    // データを転記（ログをsetValuesの直前に書き込む）
+    const listingHeaders = listingSheet.getRange(1, 1, 1, transferData.length).getValues()[0];
+    logRow = writeTransferLog(transferData, sku, listingHeaders);
     listingSheet.getRange(newRow, 1, 1, transferData.length).setValues([transferData]);
 
     // 出品シートのコンディション列にプルダウンを設定（選択済み値はsetValuesで転記済み）
@@ -976,6 +979,7 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
     });
 
     Logger.log('出品データを転記しました（行: ' + newRow + '、SKU: ' + sku + '、Item Specifics色設定: ' + specColors.length + '件）');
+    updateTransferLogStatus(logRow, '成功', '');
 
     // 完了メッセージを表示
     const ui = SpreadsheetApp.getUi();
@@ -987,6 +991,7 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
 
   } catch (error) {
     Logger.log('transferListingDataWithPolicyエラー: ' + error.toString());
+    updateTransferLogStatus(logRow, 'エラー', error.toString());
 
     // エラー発生時: SKUで予約した行をクリア
     if (reservedRow && reservedSheet && reservedSkuCol) {
