@@ -311,8 +311,33 @@ function extractYahooFleaMarketImageUrls(productPageUrl) {
     const html = response.getContentText('UTF-8');
     Logger.log('HTML取得完了: ' + html.length + ' バイト');
 
-    // auctions.c.yimg.jp ドメインの画像URLを抽出（Yahoo!フリマはヤフオクと同じCDNを使用）
-    // src="..." または data-src="..." から抽出
+    // ── 方法①: __NEXT_DATA__ JSONからitem.imagesを直接取得（関連商品混入を防ぐ） ──
+    const nextDataMatch = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+    if (nextDataMatch) {
+      try {
+        // 商品説明中の制御文字（改行等）を除去してからJSONパース
+        const cleaned = nextDataMatch[1].replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
+        const nextData = JSON.parse(cleaned);
+        const item = nextData.props.initialState.itemsState.items.item;
+        if (item && item.images && item.images.length > 0) {
+          const urls = item.images
+            .map(function(img) { return img.url || ''; })
+            .filter(function(url) { return url.length > 0; });
+          Logger.log('✅ NEXT_DATA経由で ' + urls.length + '枚取得（item.images）');
+          urls.forEach(function(url, i) {
+            Logger.log('  ✓ 画像' + (i + 1) + ': ' + url);
+          });
+          return urls.slice(0, 20);
+        }
+        Logger.log('⚠️ item.images が空のため正規表現フォールバック');
+      } catch (jsonErr) {
+        Logger.log('⚠️ NEXT_DATA JSONパース失敗、正規表現フォールバック: ' + jsonErr.toString());
+      }
+    }
+
+    // ── 方法②: フォールバック（auctions.c.yimg.jp を正規表現で抽出） ──
+    // ※ 関連商品の画像が混入する可能性あり
+    Logger.log('🔄 正規表現フォールバックで画像抽出中...');
     const pattern = /(?:src|data-src)="(https:\/\/auctions\.c\.yimg\.jp[^"]+\.(jpg|jpeg|png|webp))"/g;
     const seen = new Set();
     const imageUrls = [];
@@ -328,8 +353,8 @@ function extractYahooFleaMarketImageUrls(productPageUrl) {
       if (imageUrls.length >= 20) break;
     }
 
-    Logger.log('✅ ' + imageUrls.length + '枚の画像を検出');
-    return imageUrls.slice(0, 20); // 最大20枚
+    Logger.log('✅ ' + imageUrls.length + '枚の画像を検出（正規表現）');
+    return imageUrls.slice(0, 20);
 
   } catch (error) {
     Logger.log('extractYahooFleaMarketImageUrlsエラー: ' + error.toString());
