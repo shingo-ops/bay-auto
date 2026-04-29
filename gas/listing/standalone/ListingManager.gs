@@ -1137,15 +1137,46 @@ function reviseFixedPriceItem(spreadsheetId, rowNumber) {
       xmlBody += '</PictureDetails>';
     }
 
-    // Item Specifics
-    if (listingData.itemSpecifics && listingData.itemSpecifics.length > 0) {
+    // Item Specifics（AddFixedPriceItem と同じ構造: 専用列 + 項目名/内容列）
+    const reviseExclude = ['Brand', 'MPN', 'UPC', 'EAN'];
+    const hasSpecifics = listingData.brand || listingData.mpn ||
+                         listingData.upc   || listingData.ean ||
+                         (listingData.itemSpecifics && listingData.itemSpecifics.length > 0);
+
+    if (hasSpecifics) {
       xmlBody += '<ItemSpecifics>';
-      listingData.itemSpecifics.forEach(function(spec) {
-        xmlBody += '<NameValueList>' +
-          '<Name>' + escapeXml(spec.name) + '</Name>' +
-          '<Value>' + escapeXml(spec.value) + '</Value>' +
-          '</NameValueList>';
-      });
+
+      // Brand専用列（AddFixedPriceItemと同じ処理）
+      if (listingData.brand && String(listingData.brand).trim() !== '') {
+        xmlBody += '<NameValueList><Name>Brand</Name>' +
+          '<Value>' + escapeXml(String(listingData.brand).trim()) + '</Value></NameValueList>';
+      }
+      // MPN専用列
+      if (listingData.mpn && String(listingData.mpn).trim() !== '') {
+        xmlBody += '<NameValueList><Name>MPN</Name>' +
+          '<Value>' + escapeXml(String(listingData.mpn).trim()) + '</Value></NameValueList>';
+      }
+      // UPC専用列
+      if (listingData.upc && String(listingData.upc).trim() !== '') {
+        xmlBody += '<NameValueList><Name>UPC</Name>' +
+          '<Value>' + escapeXml(String(listingData.upc).trim()) + '</Value></NameValueList>';
+      }
+      // EAN専用列
+      if (listingData.ean && String(listingData.ean).trim() !== '') {
+        xmlBody += '<NameValueList><Name>EAN</Name>' +
+          '<Value>' + escapeXml(String(listingData.ean).trim()) + '</Value></NameValueList>';
+      }
+      // 項目名①～30（専用列と重複する名前は除外）
+      if (listingData.itemSpecifics && listingData.itemSpecifics.length > 0) {
+        listingData.itemSpecifics.forEach(function(spec) {
+          if (reviseExclude.indexOf(spec.name) !== -1) return;
+          xmlBody += '<NameValueList>' +
+            '<Name>'  + escapeXml(spec.name)  + '</Name>' +
+            '<Value>' + escapeXml(spec.value) + '</Value>' +
+            '</NameValueList>';
+        });
+      }
+
       xmlBody += '</ItemSpecifics>';
     }
 
