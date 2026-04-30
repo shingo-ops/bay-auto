@@ -27,6 +27,30 @@ function getListingSheetHeaderMapping(spreadsheetId) {
 }
 
 /**
+ * 出品シート（任意）のヘッダー名→列番号マップを返す
+ * container側の _buildListingHeaderMapping(sheet) の置き換え用
+ *
+ * @param {string} spreadsheetId スプレッドシートID
+ * @param {string} [sheetName='出品'] シート名
+ * @returns {{ [headerName: string]: number }} ヘッダー名→列番号（1-based）
+ */
+function buildListingHeaderMapping(spreadsheetId, sheetName) {
+  if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+  const ss = getTargetSpreadsheet(spreadsheetId);
+  const sheet = ss.getSheetByName(sheetName || SHEET_NAMES.LISTING);
+  if (!sheet) return {};
+  const lastCol = sheet.getLastColumn();
+  if (lastCol === 0) return {};
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const map = {};
+  for (let i = 0; i < headers.length; i++) {
+    const h = String(headers[i] || '').trim();
+    if (h) map[h] = i + 1;
+  }
+  return map;
+}
+
+/**
  * Vero/禁止ワードシートとタイトルを照合してワード判定列に結果を書き込む
  * 優先度: 禁止ワード > VERO > 該当なし
  *
@@ -146,7 +170,7 @@ function getValueByHeader(rowData, headerMapping, headerName) {
 function extractItemSpecifics(rowData, headerMapping) {
   const specifics = [];
 
-  for (let i = 1; i <= 20; i++) {
+  for (let i = 1; i <= 30; i++) {
     const nameHeader = '項目名（' + i + '）';
     const valueHeader = '内容（' + i + '）';
 
@@ -273,7 +297,8 @@ function generateDescriptionFromTemplate(templateName, conditionDescription, spr
       description = description.replace(/\{説明文\}/g, String(conditionDescription));
       Logger.log('✅ {説明文}を置換しました');
     } else {
-      Logger.log('⚠️ 状態説明が空です。{説明文}はそのまま残ります');
+      description = description.replace(/\{説明文\}/g, '');
+      Logger.log('状態説明が空のため{説明文}を除去します');
     }
 
     Logger.log('生成されたDescription（最初の100文字）: ' + description.substring(0, 100) + '...');
@@ -511,6 +536,20 @@ function validateListingData(data) {
     if (autoAccept !== null && !isNaN(price) && autoAccept > price) {
       errors.push('承認価格 は即決価格（' + price + '$）以下にしてください');
     }
+  }
+
+  // Brand必須チェック（カテゴリ依存）
+  // ※ validateListingDataにspreadsheetIdが渡っていない場合は
+  //   CURRENT_SPREADSHEET_IDを使用
+  try {
+    var catData = getCategoryMasterDataForListing(CURRENT_SPREADSHEET_ID, String(data.categoryId));
+    if (catData && catData.requiredSpecs && catData.requiredSpecs.indexOf('Brand') !== -1) {
+      if (!data.brand || String(data.brand).trim() === '') {
+        errors.push('Brand（ブランド）が未入力です → Brand列に入力してください');
+      }
+    }
+  } catch(brandCheckErr) {
+    Logger.log('Brand必須チェックエラー（続行）: ' + brandCheckErr.toString());
   }
 
   return errors;
@@ -770,6 +809,7 @@ function setupSellerInfo(spreadsheetId) {
     if (ack !== 'Success' && ack !== 'Warning') {
       const errEl  = root.getChild('Errors', ns);
       const errMsg = errEl ? errEl.getChildText('ShortMessage', ns) : '不明なエラー';
+      Logger.log('❌ setupSellerInfo 失敗: eBay APIエラー: ' + errMsg);
       return { success: false, message: 'eBay APIエラー: ' + errMsg };
     }
 
@@ -829,6 +869,7 @@ function setupSellerInfo(spreadsheetId) {
     const ss            = getTargetSpreadsheet(spreadsheetId);
     const settingsSheet = ss.getSheetByName('ツール設定');
     if (!settingsSheet) {
+      Logger.log('❌ setupSellerInfo 失敗: ツール設定シートが見つかりません');
       return { success: false, message: 'ツール設定シートが見つかりません。' };
     }
 
@@ -838,6 +879,7 @@ function setupSellerInfo(spreadsheetId) {
     const valueIdx = headers.findIndex(function(h) { return String(h || '').trim() === '値'; });
 
     if (itemIdx === -1 || valueIdx === -1) {
+      Logger.log('❌ setupSellerInfo 失敗: ツール設定シートに「項目」「値」列が見つかりません');
       return { success: false, message: 'ツール設定シートに「項目」「値」列が見つかりません。' };
     }
 
@@ -1086,24 +1128,159 @@ function reviseFixedPriceItem(spreadsheetId, rowNumber) {
       xmlBody += '<ConditionDescription>' + escapeXml(listingData.conditionDescription) + '</ConditionDescription>';
     }
 
+    // ─── 画像URL正規化 (6層poka-yoke) ──────────────────────────────────────
+
+    const originalImages = (listingData.images || []).slice();
+
+    // --- 層6: GetItem divergence detection -----------------------------------
+    let resolvedImages = originalImages;
+    const divergenceMode = getImageDivergenceMode();
+
+    if (divergenceMode !== 'disabled' && itemId) {
+      const choiceKey = 'DIVERGENCE_CHOICE_' + rowNumber;
+      const storedChoice = PropertiesService.getUserProperties().getProperty(choiceKey);
+
+      if (storedChoice) {
+        // ダイアログ選択済み — 保存された解決済みURLを使用
+        const choiceData = JSON.parse(storedChoice);
+        PropertiesService.getUserProperties().deleteProperty(choiceKey);
+        resolvedImages = choiceData.resolvedUrls || originalImages;
+        Logger.log('層6: ダイアログ選択適用 choice=' + choiceData.choice + ' ' + resolvedImages.length + '枚');
+
+      } else {
+        // 初回 — eBay側と差分チェック
+        try {
+          const ebayImages = getItemPictureUrls(itemId, token, config);
+          Logger.log('層6: eBay側画像=' + ebayImages.length + '枚 シート側=' + originalImages.length + '枚');
+          const divergence = _detectImageDivergence(ebayImages, originalImages);
+
+          if (divergence.hasDivergence) {
+            if (divergenceMode === 'prefer_ebay') {
+              resolvedImages = ebayImages;
+              Logger.log('層6 prefer_ebay: eBay側URLを採用');
+
+            } else if (divergenceMode === 'skip_on_divergence') {
+              Logger.log('層6 skip_on_divergence: 行' + rowNumber + 'をスキップ');
+              return {
+                success: false,
+                skipped: true,
+                message: '⚠️ 画像差分を検出したためスキップ (IMAGE_DIVERGENCE_MODE=skip_on_divergence)\nItem ID: ' + itemId
+              };
+
+            } else {
+              // prompt モード — ダイアログ表示して早期リターン
+              PropertiesService.getUserProperties().setProperty(
+                'DIVERGENCE_INFO_' + rowNumber,
+                JSON.stringify({
+                  spreadsheetId: spreadsheetId,
+                  rowNumber: rowNumber,
+                  itemId: itemId,
+                  ebayUrls: ebayImages,
+                  sheetUrls: originalImages
+                })
+              );
+              const tpl = HtmlService.createTemplateFromFile('imageDivergenceDialog');
+              tpl.rowNumber = rowNumber;
+              SpreadsheetApp.getUi().showModalDialog(
+                tpl.evaluate().setWidth(520).setHeight(470),
+                '⚠️ 画像差分を検出しました'
+              );
+              return {
+                success: false,
+                pendingDivergence: true,
+                message: '画像差分のためダイアログを表示しました。選択後、更新が自動実行されます。'
+              };
+            }
+          }
+        } catch (divergenceErr) {
+          Logger.log('⚠️ 層6: 差分チェックエラー（更新処理を継続）: ' + divergenceErr.toString());
+        }
+      }
+    }
+
+    // --- 層1: 選択的EPSアップロード ----------------------------------------
+    const finalImages = normalizeImagesForRevise(resolvedImages, token);
+
+    // --- 層5: count assertion (画像消失防止) --------------------------------
+    assertPictureCount(resolvedImages, finalImages, itemId, rowNumber);
+
+    // --- 層4: 構造ログ -------------------------------------------------------
+    Logger.log(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      itemId:    itemId,
+      rowNumber: rowNumber,
+      pictureUrls: {
+        total:          finalImages.length,
+        epsCount:       finalImages.filter(function(u) { return u.indexOf('ebayimg.com') !== -1; }).length,
+        selfHostedCount: finalImages.filter(function(u) { return u.indexOf('ebayimg.com') === -1; }).length,
+        samples:        finalImages.slice(0, 3)
+      }
+    }));
+
+    // --- 層2: 混在バリデーション --------------------------------------------
+    validatePictureUrlConsistency(finalImages);
+
     // 画像
-    if (listingData.images && listingData.images.length > 0) {
+    if (finalImages.length > 0) {
       xmlBody += '<PictureDetails>';
-      listingData.images.forEach(function(url) {
+      finalImages.forEach(function(url) {
         xmlBody += '<PictureURL>' + escapeXml(url) + '</PictureURL>';
       });
       xmlBody += '</PictureDetails>';
     }
 
-    // Item Specifics
-    if (listingData.itemSpecifics && listingData.itemSpecifics.length > 0) {
+    // ISBN を項目名①～30 から検出して ProductListingDetails 経由で送信
+    const isbnSpec = (listingData.itemSpecifics || []).find(function(spec) {
+      return spec.name && spec.name.trim() === 'ISBN';
+    });
+    if (isbnSpec && isbnSpec.value) {
+      xmlBody += '<ProductListingDetails>' +
+        '<ISBN>' + escapeXml(String(isbnSpec.value).trim()) + '</ISBN>' +
+        '</ProductListingDetails>';
+    }
+
+    // Item Specifics（AddFixedPriceItem と同じ構造: 専用列 + 項目名/内容列）
+    // ISBN は ProductListingDetails 経由で送信済みのため除外
+    const reviseExclude = ['Brand', 'MPN', 'UPC', 'EAN', 'ISBN'];
+    const filteredSpecifics = (listingData.itemSpecifics || []).filter(function(spec) {
+      return spec.name && spec.name.trim() !== 'ISBN';
+    });
+    const hasSpecifics = listingData.brand || listingData.mpn ||
+                         listingData.upc   || listingData.ean ||
+                         filteredSpecifics.length > 0;
+
+    if (hasSpecifics) {
       xmlBody += '<ItemSpecifics>';
-      listingData.itemSpecifics.forEach(function(spec) {
+
+      // Brand専用列（AddFixedPriceItemと同じ処理）
+      if (listingData.brand && String(listingData.brand).trim() !== '') {
+        xmlBody += '<NameValueList><Name>Brand</Name>' +
+          '<Value>' + escapeXml(String(listingData.brand).trim()) + '</Value></NameValueList>';
+      }
+      // MPN専用列
+      if (listingData.mpn && String(listingData.mpn).trim() !== '') {
+        xmlBody += '<NameValueList><Name>MPN</Name>' +
+          '<Value>' + escapeXml(String(listingData.mpn).trim()) + '</Value></NameValueList>';
+      }
+      // UPC専用列
+      if (listingData.upc && String(listingData.upc).trim() !== '') {
+        xmlBody += '<NameValueList><Name>UPC</Name>' +
+          '<Value>' + escapeXml(String(listingData.upc).trim()) + '</Value></NameValueList>';
+      }
+      // EAN専用列
+      if (listingData.ean && String(listingData.ean).trim() !== '') {
+        xmlBody += '<NameValueList><Name>EAN</Name>' +
+          '<Value>' + escapeXml(String(listingData.ean).trim()) + '</Value></NameValueList>';
+      }
+      // 項目名①～30（専用列と重複する名前は除外、ISBN は除外済み）
+      filteredSpecifics.forEach(function(spec) {
+        if (reviseExclude.indexOf(spec.name) !== -1) return;
         xmlBody += '<NameValueList>' +
-          '<Name>' + escapeXml(spec.name) + '</Name>' +
+          '<Name>'  + escapeXml(spec.name)  + '</Name>' +
           '<Value>' + escapeXml(spec.value) + '</Value>' +
           '</NameValueList>';
       });
+
       xmlBody += '</ItemSpecifics>';
     }
 
@@ -1170,7 +1347,8 @@ function reviseFixedPriceItem(spreadsheetId, rowNumber) {
 
       return {
         success: true,
-        message: '✅ 更新が完了しました\n\nItem ID: ' + itemId + '\n商品名: ' + listingData.title
+        message: '✅ 更新が完了しました\n\nItem ID: ' + itemId + '\n商品名: ' + listingData.title,
+        finalImages: finalImages
       };
     }
 
@@ -1292,6 +1470,14 @@ function addItemWithTradingApi(listingData, policyIds) {
   const config = getEbayConfig();
   const apiUrl = getTradingApiUrl();
 
+  // ConditionIDを事前解決（インライン呼び出しをやめてエラーを分かりやすくする）
+  let conditionId;
+  try {
+    conditionId = resolveConditionIdFromMaster(listingData.condition, config, listingData.categoryId);
+  } catch (condErr) {
+    return { success: false, message: '状態（コンディション）の解決に失敗しました。\n状態列の値を確認してください。\n詳細: ' + condErr.toString() };
+  }
+
   // XMLリクエストボディ構築
   let xmlBody = '<?xml version="1.0" encoding="utf-8"?>' +
     '<AddFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">' +
@@ -1303,7 +1489,7 @@ function addItemWithTradingApi(listingData, policyIds) {
     '<Description><![CDATA[' + (listingData.description || '') + ']]></Description>' +
     '<PrimaryCategory><CategoryID>' + listingData.categoryId + '</CategoryID></PrimaryCategory>' +
     '<StartPrice>' + listingData.price + '</StartPrice>' +
-    '<ConditionID>' + resolveConditionIdFromMaster(listingData.condition, config, listingData.categoryId) + '</ConditionID>' +
+    '<ConditionID>' + conditionId + '</ConditionID>' +
     '<Country>JP</Country>' +
     '<Currency>USD</Currency>' +
     '<DispatchTimeMax>3</DispatchTimeMax>' +
@@ -1351,37 +1537,67 @@ function addItemWithTradingApi(listingData, policyIds) {
     ) +
     '</SellerProfiles>';
 
-  // Item Specifics
-  if (listingData.itemSpecifics && listingData.itemSpecifics.length > 0) {
-    xmlBody += '<ItemSpecifics>';
-    listingData.itemSpecifics.forEach(function(spec) {
-      xmlBody += '<NameValueList>' +
-        '<Name>' + escapeXml(spec.name) + '</Name>' +
-        '<Value>' + escapeXml(spec.value) + '</Value>' +
-        '</NameValueList>';
-    });
-    xmlBody += '</ItemSpecifics>';
+  // ISBN を項目名①～30 から検出して ProductListingDetails 経由で送信
+  var isbnSpec = (listingData.itemSpecifics || []).find(function(spec) {
+    return spec.name && spec.name.trim() === 'ISBN';
+  });
+  if (isbnSpec && isbnSpec.value) {
+    xmlBody += '<ProductListingDetails>' +
+      '<ISBN>' + escapeXml(String(isbnSpec.value).trim()) + '</ISBN>' +
+      '</ProductListingDetails>';
   }
 
-  // Product Identifiers (UPC, EAN, MPN, Brand)
-  if (listingData.upc || listingData.ean || listingData.mpn || listingData.brand) {
-    xmlBody += '<ProductListingDetails>';
-    if (listingData.upc) {
-      xmlBody += '<UPC>' + escapeXml(listingData.upc) + '</UPC>';
-    }
-    if (listingData.ean) {
-      xmlBody += '<EAN>' + escapeXml(listingData.ean) + '</EAN>';
-    }
-    if (listingData.brand) {
-      xmlBody += '<BrandMPN>' +
-        '<Brand>' + escapeXml(listingData.brand) + '</Brand>';
-      if (listingData.mpn) {
-        xmlBody += '<MPN>' + escapeXml(listingData.mpn) + '</MPN>';
-      }
-      xmlBody += '</BrandMPN>';
-    }
-    xmlBody += '</ProductListingDetails>';
+  // ItemSpecifics構築（専用列のBrand/UPC/EAN/MPNも含める）
+  // ISBN は ProductListingDetails 経由で送信済みのため除外
+  var excludeFromSpecifics = ['Brand', 'MPN', 'UPC', 'EAN', 'ISBN'];
+  var filteredSpecifics = (listingData.itemSpecifics || []).filter(function(spec) {
+    return spec.name && spec.name.trim() !== 'ISBN';
+  });
+
+  xmlBody += '<ItemSpecifics>';
+
+  // Brand専用列から追加
+  if (listingData.brand && String(listingData.brand).trim() !== '') {
+    xmlBody += '<NameValueList>' +
+      '<Name>Brand</Name>' +
+      '<Value>' + escapeXml(String(listingData.brand).trim()) + '</Value>' +
+      '</NameValueList>';
   }
+
+  // MPN専用列から追加
+  if (listingData.mpn && String(listingData.mpn).trim() !== '') {
+    xmlBody += '<NameValueList>' +
+      '<Name>MPN</Name>' +
+      '<Value>' + escapeXml(String(listingData.mpn).trim()) + '</Value>' +
+      '</NameValueList>';
+  }
+
+  // UPC専用列から追加
+  if (listingData.upc && String(listingData.upc).trim() !== '') {
+    xmlBody += '<NameValueList>' +
+      '<Name>UPC</Name>' +
+      '<Value>' + escapeXml(String(listingData.upc).trim()) + '</Value>' +
+      '</NameValueList>';
+  }
+
+  // EAN専用列から追加
+  if (listingData.ean && String(listingData.ean).trim() !== '') {
+    xmlBody += '<NameValueList>' +
+      '<Name>EAN</Name>' +
+      '<Value>' + escapeXml(String(listingData.ean).trim()) + '</Value>' +
+      '</NameValueList>';
+  }
+
+  // 項目名/内容列のItem Specifics（専用列・ISBNで除外済みのものを除外）
+  filteredSpecifics.forEach(function(spec) {
+    if (excludeFromSpecifics.indexOf(spec.name) !== -1) return;
+    xmlBody += '<NameValueList>' +
+      '<Name>' + escapeXml(spec.name) + '</Name>' +
+      '<Value>' + escapeXml(spec.value) + '</Value>' +
+      '</NameValueList>';
+  });
+
+  xmlBody += '</ItemSpecifics>';
 
   // Best Offer
   if (hasBestOffer) {
@@ -1450,46 +1666,40 @@ function addItemWithTradingApi(listingData, policyIds) {
   const ackElement = root.getChild('Ack', ns);
   const ack = ackElement ? ackElement.getText() : '';
 
+  // エラー・警告を全件収集（eBayは複数の <Errors> を返す場合がある）
+  const errorsElements = root.getChildren('Errors', ns);
+  const allErrors = [];
+  const allWarnings = [];
+  for (var i = 0; i < errorsElements.length; i++) {
+    var err = errorsElements[i];
+    var severity = err.getChildText('SeverityCode', ns);
+    var errorCode = err.getChildText('ErrorCode', ns) || '';
+    var longMsg = err.getChildText('LongMessage', ns) || '';
+    if (severity === 'Error') {
+      Logger.log('❌ eBayエラー: ' + errorCode + ' / ' + longMsg);
+      allErrors.push('ErrorCode: ' + errorCode + ' / ' + longMsg);
+    } else {
+      allWarnings.push('ErrorCode: ' + errorCode + ' / ' + longMsg);
+    }
+  }
+
   if (ack === 'Success' || ack === 'Warning') {
     const itemIdElement = root.getChild('ItemID', ns);
     const itemId = itemIdElement ? itemIdElement.getText() : '';
-
     Logger.log('✅ 出品成功: Item ID = ' + itemId);
-
-    // Warningがある場合はログ出力
-    if (ack === 'Warning') {
-      const errorsElement = root.getChild('Errors', ns);
-      if (errorsElement) {
-        const shortMsg = errorsElement.getChild('ShortMessage', ns);
-        const longMsg = errorsElement.getChild('LongMessage', ns);
-        Logger.log('⚠️ Warning: ' + (shortMsg ? shortMsg.getText() : ''));
-        Logger.log('詳細: ' + (longMsg ? longMsg.getText() : ''));
-      }
+    if (allWarnings.length > 0) {
+      Logger.log('⚠️ Warning: ' + allWarnings.join(' | '));
     }
-
     return {
       success: true,
-      itemId: itemId
+      itemId: itemId,
+      warning: allWarnings.length > 0 ? allWarnings.join('\n') : ''
     };
   } else {
-    // エラー処理
-    const errorsElement = root.getChild('Errors', ns);
-    let errorMessage = 'Unknown error';
-
-    if (errorsElement) {
-      const errorCode = errorsElement.getChild('ErrorCode', ns);
-      const shortMsg = errorsElement.getChild('ShortMessage', ns);
-      const longMsg = errorsElement.getChild('LongMessage', ns);
-
-      errorMessage = 'ErrorCode: ' + (errorCode ? errorCode.getText() : '') + '\n' +
-        'Message: ' + (shortMsg ? shortMsg.getText() : '') + '\n' +
-        'Details: ' + (longMsg ? longMsg.getText() : '');
-    }
-
+    const errorMessage = allErrors.length > 0 ? allErrors.join('\n') : 'Unknown error';
     Logger.log('❌ 出品失敗: ' + errorMessage);
     Logger.log('Full Response: ' + responseText);
-
-    throw new Error('Trading API出品エラー:\n' + errorMessage);
+    return { success: false, message: errorMessage };
   }
 }
 
@@ -1915,6 +2125,12 @@ function transferToOutputDb_phase1(spreadsheetId, rowNumber, listingData, output
       Logger.log('SKU予約完了: ' + newRow + '行目 / SKU: ' + listingData.sku);
     }
 
+    // Item ID列に出品中メモを書き込み（他の処理がこの行を再利用しないようにする）
+    if (itemIdColInOutput !== -1) {
+      outputSheet.getRange(newRow, itemIdColInOutput + 1).setValue('出品中: ' + listingData.sku);
+      Logger.log('Item ID列に出品中メモを書き込み: ' + newRow + '行目');
+    }
+
     // outputRowにSKUをセット
     if (skuColInOutput !== -1) {
       outputRow[skuColInOutput] = listingData.sku;
@@ -2009,21 +2225,32 @@ function transferToOutputDb_phase2(outputDbId, dbRow, itemId, sku, epsImages) {
     const managementMonth = parseInt(year + month);
     const listingUrl      = 'https://www.ebay.com/itm/' + itemId;
 
+    // 修正1: 各列の書き込みエラーで全体が止まらないようにする
+    const skippedColumns = [];
+    function safeSetValue(col, value, colName) {
+      try {
+        outputSheet.getRange(dbRow, col).setValue(value);
+      } catch(e) {
+        Logger.log('⚠️ DB書き込みスキップ: ' + colName + ' (列' + col + ') → ' + e.toString());
+        skippedColumns.push(colName);
+      }
+    }
+
     if ('Item ID' in outputColMap) {
-      outputSheet.getRange(dbRow, outputColMap['Item ID'] + 1).setValue(itemId);
+      safeSetValue(outputColMap['Item ID'] + 1, itemId, 'Item ID');
     }
     if ('出品URL' in outputColMap) {
-      outputSheet.getRange(dbRow, outputColMap['出品URL'] + 1).setValue(listingUrl);
+      safeSetValue(outputColMap['出品URL'] + 1, listingUrl, '出品URL');
     }
     const statusKey = ('出品ステータス' in outputColMap) ? '出品ステータス' : 'ステータス';
     if (statusKey in outputColMap) {
-      outputSheet.getRange(dbRow, outputColMap[statusKey] + 1).setValue('出品中');
+      safeSetValue(outputColMap[statusKey] + 1, '出品中', statusKey);
     }
     if ('出品タイムスタンプ' in outputColMap) {
-      outputSheet.getRange(dbRow, outputColMap['出品タイムスタンプ'] + 1).setValue(timestamp);
+      safeSetValue(outputColMap['出品タイムスタンプ'] + 1, timestamp, '出品タイムスタンプ');
     }
     if ('管理年月' in outputColMap) {
-      outputSheet.getRange(dbRow, outputColMap['管理年月'] + 1).setValue(managementMonth);
+      safeSetValue(outputColMap['管理年月'] + 1, managementMonth, '管理年月');
     }
 
     // EPS URLを画像列に書き戻す
@@ -2039,22 +2266,21 @@ function transferToOutputDb_phase2(outputDbId, dbRow, itemId, sku, epsImages) {
         if (epsIndex >= epsImages.length) break;
         const colName = imageColNames[i];
         if (!(colName in outputColMap)) continue;
-        // 元のDB値が空でなければEPS URLで上書き
+        // 修正2: Drive URLがある列のみEPS URLで上書き（epsIndexは常に進める）
         const currentVal = String(
           outputSheet.getRange(dbRow, outputColMap[colName] + 1).getValue() || ''
         ).trim();
-        if (currentVal !== '') {
-          outputSheet.getRange(dbRow, outputColMap[colName] + 1)
-            .setValue(epsImages[epsIndex]);
+        if (currentVal !== '' && epsIndex < epsImages.length) {
+          safeSetValue(outputColMap[colName] + 1, epsImages[epsIndex], colName);
           Logger.log('DB EPS URL書き込み: ' + colName + ' → ' + epsImages[epsIndex].substring(0, 50));
-          epsIndex++;
         }
+        epsIndex++; // 空欄でもインデックスを進めてズレを防ぐ
       }
       Logger.log('✅ DB EPS URL書き込み完了: ' + epsIndex + '列');
     }
 
     Logger.log('✅ 出品DB Phase2更新完了: ' + dbRow + '行目 / Item ID: ' + itemId);
-    return { success: true };
+    return { success: true, skippedColumns: skippedColumns };
 
   } catch (error) {
     Logger.log('❌ 出品DB Phase2更新エラー: ' + error.toString());
@@ -2524,7 +2750,7 @@ function createListing(spreadsheetId, rowNumber) {
     try {
       result = addItemWithTradingApi(listingData, policyIds);
     } catch (ebayError) {
-      // 出品失敗 → Phase1で作成したDB行を削除してロールバック
+      // ネットワークエラー等、予期しない例外 → DB行をロールバック
       if (dbRow && outputDbId) {
         deleteDbRow(outputDbId, dbRow, listingData.sku);
         Logger.log('⚠️ 出品失敗のためDB転記データを削除しました');
@@ -2532,6 +2758,17 @@ function createListing(spreadsheetId, rowNumber) {
       return {
         success: false,
         message: '❌ 出品に失敗しました。' + (dbRow ? 'DB転記データを削除しました。' : '') + '\n\n理由: ' + ebayError.toString()
+      };
+    }
+    // eBay APIエラー（Failure レスポンス）→ DB行をロールバック
+    if (!result.success) {
+      if (dbRow && outputDbId) {
+        deleteDbRow(outputDbId, dbRow, listingData.sku);
+        Logger.log('⚠️ 出品失敗のためDB転記データを削除しました');
+      }
+      return {
+        success: false,
+        message: '❌ 出品に失敗しました。' + (dbRow ? 'DB転記データを削除しました。' : '') + '\n\n' + result.message
       };
     }
     Logger.log('✅ 出品完了');
@@ -2548,6 +2785,7 @@ function createListing(spreadsheetId, rowNumber) {
     }
 
     // Phase4: DB側に特殊フィールドを更新（Item ID・URL・ステータス等）
+    let phase2SkippedColumns = [];
     if (dbRow && outputDbId) {
       const phase2Result = transferToOutputDb_phase2(outputDbId, dbRow, result.itemId, listingData.sku, epsImages);
       if (!phase2Result.success) {
@@ -2563,6 +2801,7 @@ function createListing(spreadsheetId, rowNumber) {
           rowCleared: false
         };
       }
+      phase2SkippedColumns = phase2Result.skippedColumns || [];
     }
 
     // Phase5: 出品シートのデータクリア
@@ -2574,6 +2813,7 @@ function createListing(spreadsheetId, rowNumber) {
       sku: listingData.sku || '',
       promotedListing: promotedListingResult || null,
       rowCleared: true,
+      skippedColumns: phase2SkippedColumns,
       missingCols: []
     };
 
@@ -2779,80 +3019,692 @@ function testTransferToOutputDb() {
   }
 }
 
-function fetchRecentListings() {
+// ─────────────────────────────────────────────────────────────────────────────
+// eBay スペック取得・書き込みビジネスロジック（Steps 10-13）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * カテゴリマスタから 1 カテゴリ分のデータを取得
+ * category_master_EBAY_US シートをヘッダーベースで読み込む
+ *
+ * @param {string} spreadsheetId
+ * @param {string} categoryId
+ * @returns {Object|null} {requiredSpecs, recommendedSpecs, optionalSpecs, aspectValues, conditionGroup}
+ */
+function getCategoryMasterDataForListing(spreadsheetId, categoryId) {
   try {
-    const spreadsheetId = PropertiesService.getScriptProperties()
-      .getProperty('DEFAULT_SPREADSHEET_ID');
-    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
-
-    autoRefreshTokenIfNeeded(spreadsheetId);
-    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
-
-    const config = getEbayConfig();
-    const token = config.userToken;
-
-    // GetSellerList で直近24時間の出品を取得
-    const now = new Date();
-    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-
-    const xmlRequest = '<?xml version="1.0" encoding="utf-8"?>' +
-      '<GetSellerListRequest xmlns="urn:ebay:apis:eBLBaseComponents">' +
-      '<RequesterCredentials>' +
-      '<eBayAuthToken>' + token + '</eBayAuthToken>' +
-      '</RequesterCredentials>' +
-      '<StartTimeFrom>' + yesterday.toISOString() + '</StartTimeFrom>' +
-      '<StartTimeTo>' + now.toISOString() + '</StartTimeTo>' +
-      '<DetailLevel>ReturnAll</DetailLevel>' +
-      '<Pagination>' +
-      '<EntriesPerPage>10</EntriesPerPage>' +
-      '<PageNumber>1</PageNumber>' +
-      '</Pagination>' +
-      '<IncludeItemSpecifics>true</IncludeItemSpecifics>' +
-      '</GetSellerListRequest>';
-
-    const response = UrlFetchApp.fetch('https://api.ebay.com/ws/api.dll', {
-      method: 'POST',
-      headers: {
-        'X-EBAY-API-CALL-NAME': 'GetSellerList',
-        'X-EBAY-API-SITEID': '0',
-        'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
-        'X-EBAY-API-APP-NAME': config.appId,
-        'X-EBAY-API-DEV-NAME': config.devId,
-        'X-EBAY-API-CERT-NAME': config.certId,
-        'Content-Type': 'text/xml'
-      },
-      payload: xmlRequest,
-      muteHttpExceptions: true
-    });
-
-    const ns = XmlService.getNamespace('urn:ebay:apis:eBLBaseComponents');
-    const root = XmlService.parse(response.getContentText()).getRootElement();
-    const ack = root.getChildText('Ack', ns);
-
-    Logger.log('Ack: ' + ack);
-
-    const itemArray = root.getChild('ItemArray', ns);
-    if (!itemArray) {
-      Logger.log('ItemArrayが見つかりません');
-      return;
+    const config        = getListingToolConfig(spreadsheetId);
+    const masterIdOrUrl = String(config['カテゴリマスタ'] || '').trim();
+    if (!masterIdOrUrl) {
+      Logger.log('[getCategoryMasterDataForListing] カテゴリマスタが未設定（ツール設定 > カテゴリマスタ）');
+      return null;
     }
 
-    const items = itemArray.getChildren('Item', ns);
-    Logger.log('取得件数: ' + items.length + '件');
+    let masterId = masterIdOrUrl;
+    const urlMatch = masterIdOrUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    if (urlMatch && urlMatch[1]) masterId = urlMatch[1];
 
-    items.forEach(function(item) {
-      const itemId = item.getChildText('ItemID', ns);
-      const title = item.getChildText('Title', ns);
-      const price = item.getChild('StartPrice', ns)
-        ? item.getChild('StartPrice', ns).getText() : '';
-      const startTime = item.getChildText('ListingDetails') || '';
-      Logger.log('Item ID: ' + itemId + ' / タイトル: ' + title + ' / 価格: $' + price);
+    const masterSs = SpreadsheetApp.openById(masterId);
+    const sheet    = masterSs.getSheetByName('category_master_EBAY_US');
+    if (!sheet) {
+      Logger.log('[getCategoryMasterDataForListing] category_master_EBAY_US シートが見つかりません');
+      return null;
+    }
+
+    const data    = sheet.getDataRange().getValues();
+    const headers = data[0];
+
+    const idx = {
+      catId:   headers.indexOf('category_id'),
+      catName: headers.indexOf('category_name'),
+      req:     headers.indexOf('required_specs_json'),
+      rec:     headers.indexOf('recommended_specs_json'),
+      opt:     headers.indexOf('optional_specs_json'),
+      aspVal:  headers.indexOf('aspect_values_json'),
+      group:   headers.indexOf('condition_group')
+    };
+
+    if (idx.catId === -1) {
+      Logger.log('[getCategoryMasterDataForListing] category_id 列が見つかりません');
+      return null;
+    }
+
+    const parseArr = function(v) { try { return v ? JSON.parse(v) : []; } catch (e) { return []; } };
+    const parseObj = function(v) { try { return v ? JSON.parse(v) : {}; } catch (e) { return {}; } };
+
+    for (let i = 1; i < data.length; i++) {
+      if (String(data[i][idx.catId]) === String(categoryId)) {
+        return {
+          categoryId:       String(data[i][idx.catId]),
+          categoryName:     idx.catName !== -1 ? String(data[i][idx.catName] || '') : '',
+          requiredSpecs:    idx.req    !== -1 ? parseArr(data[i][idx.req])    : [],
+          recommendedSpecs: idx.rec    !== -1 ? parseArr(data[i][idx.rec])    : [],
+          optionalSpecs:    idx.opt    !== -1 ? parseArr(data[i][idx.opt])    : [],
+          aspectValues:     idx.aspVal !== -1 ? parseObj(data[i][idx.aspVal]) : {},
+          conditionGroup:   idx.group  !== -1 ? String(data[i][idx.group] || '') : ''
+        };
+      }
+    }
+
+    Logger.log('[getCategoryMasterDataForListing] カテゴリID ' + categoryId + ' が見つかりません');
+    return null;
+
+  } catch (e) {
+    Logger.log('[getCategoryMasterDataForListing] エラー: ' + e.toString());
+    return null;
+  }
+}
+
+/**
+ * Item Specifics を優先度順にソートして最大 30 件返す
+ * Brand / UPC / EAN / MPN / Condition は除外（専用列に書き込む）
+ * 30 件未満の場合、カテゴリマスタから不足分を充填
+ *
+ * @param {Object} specifics {name: value}
+ * @param {Object|null} catData getCategoryMasterDataForListing の戻り値
+ * @returns {Array<{name, value, priority, hasValue, color}>}
+ */
+function sortSpecsForListing(specifics, catData) {
+  const EXCLUDE           = ['Brand', 'UPC', 'EAN', 'MPN', 'Condition'];
+  const COLOR_REQUIRED    = '#CC0000';
+  const COLOR_RECOMMENDED = '#1155CC';
+  const COLOR_OPTIONAL    = '#666666';
+
+  const requiredSpecs    = catData ? (catData.requiredSpecs    || []) : [];
+  const recommendedSpecs = catData ? (catData.recommendedSpecs || []) : [];
+  const optionalSpecs    = catData ? (catData.optionalSpecs    || []) : [];
+
+  const specArray = [];
+  const usedNames = [];
+
+  Object.keys(specifics).forEach(function(key) {
+    if (EXCLUDE.indexOf(key) !== -1) return;
+
+    const value    = specifics[key];
+    const hasValue = value !== null && value !== undefined && String(value).trim() !== '';
+
+    let priority = 3;
+    let color    = COLOR_OPTIONAL;
+
+    if (requiredSpecs.indexOf(key) !== -1) {
+      priority = 1; color = COLOR_REQUIRED;
+    } else if (recommendedSpecs.indexOf(key) !== -1) {
+      priority = 2; color = COLOR_RECOMMENDED;
+    }
+
+    specArray.push({ name: key, value: value || '', priority: priority, hasValue: hasValue, color: color });
+    usedNames.push(key);
+  });
+
+  specArray.sort(function(a, b) {
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    if (a.hasValue !== b.hasValue) return a.hasValue ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  if (specArray.length < 30) {
+    const fillCandidates = [];
+
+    requiredSpecs.forEach(function(name) {
+      if (typeof name !== 'string') return;
+      if (usedNames.indexOf(name) === -1 && EXCLUDE.indexOf(name) === -1) {
+        fillCandidates.push({ name: name, value: '', priority: 1, hasValue: false, color: COLOR_REQUIRED });
+      }
+    });
+    recommendedSpecs.forEach(function(name) {
+      if (typeof name !== 'string') return;
+      if (usedNames.indexOf(name) === -1 && EXCLUDE.indexOf(name) === -1) {
+        fillCandidates.push({ name: name, value: '', priority: 2, hasValue: false, color: COLOR_RECOMMENDED });
+      }
+    });
+    optionalSpecs.forEach(function(name) {
+      if (typeof name !== 'string') return;
+      if (usedNames.indexOf(name) === -1 && EXCLUDE.indexOf(name) === -1) {
+        fillCandidates.push({ name: name, value: '', priority: 3, hasValue: false, color: COLOR_OPTIONAL });
+      }
     });
 
-  } catch(e) {
-    Logger.log('エラー: ' + e.toString());
+    const remaining = 30 - specArray.length;
+    for (let i = 0; i < remaining && i < fillCandidates.length; i++) {
+      specArray.push(fillCandidates[i]);
+    }
+  }
+
+  Logger.log('[sortSpecsForListing] 最終スペック数: ' + specArray.length + '件');
+  return specArray;
+}
+
+/**
+ * ソート済みスペックを出品シートの Item Specifics 列に書き込む
+ *
+ * @param {Sheet} sheet
+ * @param {number} row
+ * @param {Object} headerMapping
+ * @param {Array} sortedSpecs
+ * @param {Object|null} catData
+ */
+function writeSpecsToListingSheet(sheet, row, headerMapping, sortedSpecs, catData) {
+  const aspectValues = catData ? (catData.aspectValues || {}) : {};
+  const limit        = Math.min(sortedSpecs.length, 30);
+
+  for (let i = 0; i < 30; i++) {
+    const nameCol  = headerMapping['項目名（' + (i + 1) + '）'];
+    const valueCol = headerMapping['内容（' + (i + 1) + '）'];
+
+    if (!nameCol && !valueCol) continue;
+
+    if (i >= limit) {
+      if (nameCol)  sheet.getRange(row, nameCol).clearContent().clearDataValidations().setFontColor(null);
+      if (valueCol) sheet.getRange(row, valueCol).clearContent().clearDataValidations();
+      continue;
+    }
+
+    const spec = sortedSpecs[i];
+
+    if (nameCol) {
+      sheet.getRange(row, nameCol)
+        .setValue(spec.name)
+        .setFontColor(spec.color);
+    }
+
+    if (valueCol) {
+      const valueCell = sheet.getRange(row, valueCol);
+
+      const allowed = aspectValues[spec.name];
+      if (Array.isArray(allowed) && allowed.length > 0) {
+        const rule = SpreadsheetApp.newDataValidation()
+          .requireValueInList(allowed.map(String), true)
+          .setAllowInvalid(true)
+          .build();
+        valueCell.setDataValidation(rule);
+      } else {
+        valueCell.clearDataValidations();
+      }
+
+      if (spec.value !== null && spec.value !== undefined && String(spec.value).trim() !== '') {
+        valueCell.setValue(spec.value);
+      } else {
+        valueCell.clearContent();
+      }
+    }
+  }
+
+  Logger.log('[writeSpecsToListingSheet] 書き込み完了: ' + limit + '件');
+}
+
+/**
+ * スペックURLから商品情報を取得して出品シートに書き込む
+ * UI呼び出しなし。結果をオブジェクトで返す。
+ *
+ * @param {string} spreadsheetId
+ * @param {string} sheetName
+ * @param {number} row
+ * @param {string} specUrl
+ * @param {boolean} [skipCategoryCheck=false] trueの場合カテゴリ不一致でも上書きして続行
+ * @returns {{ success: boolean, message: string, filledCount: number,
+ *             categoryMismatch?: boolean, currentCategoryId?: string,
+ *             fetchedCategoryId?: string, fetchedCategoryName?: string }}
+ */
+function fetchAndWriteSpecForListing(spreadsheetId, sheetName, row, specUrl, skipCategoryCheck) {
+  try {
+    // 1. Item ID を抽出
+    const itemId = extractItemIdForListing(specUrl);
+    if (!itemId) {
+      return { success: false, message: 'URLから商品IDを抽出できませんでした: ' + specUrl, filledCount: 0 };
+    }
+    Logger.log('[fetchAndWriteSpecForListing] itemId=' + itemId);
+
+    // 2. シートとヘッダーマッピングを取得
+    const ss    = getTargetSpreadsheet(spreadsheetId);
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      return { success: false, message: 'シートが見つかりません: ' + sheetName, filledCount: 0 };
+    }
+    const headerMapping = buildListingHeaderMapping(spreadsheetId, sheetName);
+
+    // 3. eBay API で商品情報を取得
+    const item = getItemForListing(spreadsheetId, itemId);
+
+    // 4. カテゴリ情報を抽出
+    const fetchedCategoryId   = extractCategoryIdFromItem(item);
+    const fetchedCategoryName = extractCategoryNameFromItem(item);
+    Logger.log('[fetchAndWriteSpecForListing] fetched category: ' + fetchedCategoryId + ' / ' + fetchedCategoryName);
+
+    // 5. カテゴリID不一致チェック
+    const categoryIdCol   = headerMapping['カテゴリID'];
+    const categoryNameCol = headerMapping['カテゴリ'];
+    const currentCategoryId = categoryIdCol
+      ? String(sheet.getRange(row, categoryIdCol).getValue() || '').trim()
+      : '';
+
+    if (currentCategoryId && fetchedCategoryId && currentCategoryId !== fetchedCategoryId) {
+      if (!skipCategoryCheck) {
+        Logger.log('[fetchAndWriteSpecForListing] カテゴリID不一致を検出: ' + currentCategoryId + ' → ' + fetchedCategoryId);
+        return {
+          success:           false,
+          categoryMismatch:  true,
+          currentCategoryId: currentCategoryId,
+          fetchedCategoryId: fetchedCategoryId,
+          fetchedCategoryName: fetchedCategoryName,
+          message:           'カテゴリIDが一致しません',
+          filledCount:       0
+        };
+      }
+      Logger.log('[fetchAndWriteSpecForListing] カテゴリID不一致: ' + currentCategoryId +
+                 ' → ' + fetchedCategoryId + ' (' + fetchedCategoryName + ') skipCategoryCheck=trueにより上書き');
+    }
+
+    // 6. カテゴリID / カテゴリ名を書き込み
+    if (fetchedCategoryId && categoryIdCol) {
+      sheet.getRange(row, categoryIdCol).setValue(fetchedCategoryId);
+    }
+    if (fetchedCategoryName && categoryNameCol) {
+      sheet.getRange(row, categoryNameCol).setValue(fetchedCategoryName);
+    }
+
+    // 7. アイテムスペシフィックスを抽出
+    const specifics = extractItemSpecificsFromItem(item);
+    Logger.log('[fetchAndWriteSpecForListing] specifics count=' + Object.keys(specifics).length);
+
+    // 8. カテゴリマスタデータを取得
+    const targetCategoryId = fetchedCategoryId || currentCategoryId;
+    const catData = targetCategoryId ? getCategoryMasterDataForListing(spreadsheetId, targetCategoryId) : null;
+
+    // 9. スペックを優先度順にソート・充填
+    const sortedSpecs = sortSpecsForListing(specifics, catData);
+
+    // 10. シートに書き込み
+    writeSpecsToListingSheet(sheet, row, headerMapping, sortedSpecs, catData);
+
+    // 11. スペックURLをクリア（同一URL再入力でもトリガーが発火するよう）
+    const specUrlColForClear = headerMapping['スペックURL'];
+    if (specUrlColForClear) sheet.getRange(row, specUrlColForClear).clearContent();
+
+    const filledCount = sortedSpecs.filter(function(s) { return s.value && String(s.value).trim() !== ''; }).length;
+    Logger.log('[fetchAndWriteSpecForListing] 完了: ' + filledCount + '件');
+
+    return { success: true, message: '', filledCount: filledCount };
+
+  } catch (err) {
+    Logger.log('[fetchAndWriteSpecForListing] エラー: ' + err.toString());
+    return { success: false, message: err.toString(), filledCount: 0 };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// eBay Browse API 商品情報取得
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * eBay Browse API で商品情報を取得（バリエーション商品対応）
+ * エラー 11006 の場合は get_items_by_item_group にフォールバック
+ *
+ * @param {string} spreadsheetId
+ * @param {string} itemId
+ * @returns {Object} eBay item オブジェクト
+ */
+function getItemForListing(spreadsheetId, itemId) {
+  const token  = getOAuthTokenForListing(spreadsheetId);
+  const apiUrl = 'https://api.ebay.com/buy/browse/v1/item/get_item_by_legacy_id'
+               + '?legacy_item_id=' + itemId + '&fieldgroups=PRODUCT';
+
+  const response = UrlFetchApp.fetch(apiUrl, {
+    method: 'get',
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
+    },
+    muteHttpExceptions: true
+  });
+
+  const statusCode = response.getResponseCode();
+  const body       = response.getContentText();
+
+  if (statusCode === 200) {
+    Logger.log('[getItemForListing] 取得成功: itemId=' + itemId);
+    return JSON.parse(body);
+  }
+
+  // エラー 11006: バリエーション商品 → item_group にフォールバック
+  try {
+    const errorData = JSON.parse(body);
+    if (errorData.errors && errorData.errors.length > 0) {
+      const firstError = errorData.errors[0];
+      if (Number(firstError.errorId) === 11006) {
+        Logger.log('[getItemForListing] バリエーション商品を検出。item_group API で再取得。');
+        if (firstError.parameters && Array.isArray(firstError.parameters)) {
+          const groupParam = firstError.parameters.find(function(p) { return p.name === 'itemGroupHref'; });
+          if (groupParam && groupParam.value) {
+            const m = groupParam.value.match(/item_group_id=(\d+)/);
+            if (m && m[1]) return getItemGroupForListing(m[1], token);
+          }
+        }
+      }
+    }
+  } catch (parseErr) {}
+
+  if (statusCode === 404) throw new Error('商品が見つかりません。URLを確認してください。');
+  if (statusCode === 401 || statusCode === 403) {
+    throw new Error('eBay API認証に失敗しました。ツール設定の App ID / Cert ID / USER_TOKEN を確認してください。');
+  }
+  throw new Error('eBay API エラー (HTTP ' + statusCode + '): ' + body.substring(0, 200));
+}
+
+/**
+ * アイテムグループAPIで最初のバリエーション商品を取得
+ *
+ * @param {string} itemGroupId
+ * @param {string} token
+ * @returns {Object} eBay item オブジェクト（最初のバリエーション）
+ */
+function getItemGroupForListing(itemGroupId, token) {
+  const apiUrl = 'https://api.ebay.com/buy/browse/v1/item/get_items_by_item_group'
+               + '?item_group_id=' + itemGroupId;
+
+  const response = UrlFetchApp.fetch(apiUrl, {
+    method: 'get',
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
+    },
+    muteHttpExceptions: true
+  });
+
+  if (response.getResponseCode() !== 200) {
+    throw new Error('アイテムグループAPI エラー (HTTP ' + response.getResponseCode() + ')');
+  }
+
+  const data = JSON.parse(response.getContentText());
+  if (!data.items || data.items.length === 0) {
+    throw new Error('アイテムグループにバリエーションが見つかりません: ' + itemGroupId);
+  }
+
+  const firstItem = data.items[0];
+  firstItem._isItemGroup    = true;
+  firstItem._itemGroupId    = itemGroupId;
+  firstItem._variationCount = data.items.length;
+  Logger.log('[getItemGroupForListing] バリエーション商品取得: ' + firstItem.title);
+  return firstItem;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// eBay アイテム情報抽出ユーティリティ
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * eBay URLから商品IDを抽出
+ * @param {string} url
+ * @returns {string|null}
+ */
+function extractItemIdForListing(url) {
+  if (!url || typeof url !== 'string') return null;
+  const patterns = [
+    /\/itm\/(\d+)/,
+    /\/itm\/[^\/]+\/(\d+)/,
+    /item=(\d+)/
+  ];
+  for (let i = 0; i < patterns.length; i++) {
+    const m = url.match(patterns[i]);
+    if (m && m[1]) return m[1];
+  }
+  Logger.log('[extractItemIdForListing] 商品ID抽出失敗: ' + url);
+  return null;
+}
+
+/**
+ * eBay item オブジェクトからカテゴリIDを取得
+ * @param {Object} item
+ * @returns {string}
+ */
+function extractCategoryIdFromItem(item) {
+  return String(item.categoryId || '');
+}
+
+/**
+ * eBay item オブジェクトからカテゴリ名（末尾セグメント）を取得
+ * @param {Object} item
+ * @returns {string}
+ */
+function extractCategoryNameFromItem(item) {
+  if (!item.categoryPath) return '';
+  const parts = item.categoryPath.split(' > ');
+  return parts[parts.length - 1] || '';
+}
+
+/**
+ * eBay item からアイテムスペシフィックスを抽出
+ * localizedAspects + Brand / MPN / UPC / EAN / GTIN
+ *
+ * @param {Object} item
+ * @returns {Object} {aspectName: value}
+ */
+function extractItemSpecificsFromItem(item) {
+  const specifics = {};
+
+  if (item.localizedAspects && Array.isArray(item.localizedAspects)) {
+    item.localizedAspects.forEach(function(aspect) {
+      if (aspect.name && aspect.value) {
+        specifics[aspect.name] = aspect.value;
+      }
+    });
+  }
+
+  if (item.brand)  specifics['Brand'] = item.brand;
+  if (item.mpn)    specifics['MPN']   = item.mpn;
+  if (item.upc)    specifics['UPC']   = item.upc;
+  if (item.ean && !specifics['UPC'])  specifics['EAN'] = item.ean;
+  if (item.gtin && Array.isArray(item.gtin) && item.gtin.length > 0 && !specifics['UPC']) {
+    specifics['UPC'] = item.gtin[0];
+  }
+
+  Logger.log('[extractItemSpecificsFromItem] ' + Object.keys(specifics).length + '件');
+  return specifics;
+}
+
+
+// =============================================================================
+// EPS/Self Hosted 混在防止 poka-yoke (層2, 層5, 層6 サポート関数)
+// =============================================================================
+
+/**
+ * 層2: PictureURL 配列の EPS/Self Hosted 混在チェック。
+ * 混在していれば PICTURE_URL_MIXED_FORMAT エラーをスロー。
+ *
+ * @param {string[]} urls 送信前の画像URL配列
+ */
+function validatePictureUrlConsistency(urls) {
+  if (!urls || urls.length === 0) return;
+
+  var hasEps       = urls.some(function(u) { return u.indexOf('ebayimg.com') !== -1; });
+  var hasSelfHosted = urls.some(function(u) { return u.indexOf('ebayimg.com') === -1; });
+
+  if (hasEps && hasSelfHosted) {
+    var epsSamples  = urls.filter(function(u) { return u.indexOf('ebayimg.com') !== -1; }).slice(0, 2);
+    var selfSamples = urls.filter(function(u) { return u.indexOf('ebayimg.com') === -1; }).slice(0, 2);
+    Logger.log('❌ 層2: PICTURE_URL_MIXED_FORMAT EPS=' + epsSamples.join(', ') + ' Self=' + selfSamples.join(', '));
+    throw new Error(
+      'PICTURE_URL_MIXED_FORMAT: EPS/Self Hosted混在を検出しました。\n' +
+      'EPS URL (i.ebayimg.com): ' + epsSamples.join(', ') + '\n' +
+      'Self Hosted URL: ' + selfSamples.join(', ')
+    );
+  }
+}
+
+/**
+ * 層5: count assertion — 画像消失防止。
+ * 正規化後の枚数が元より少ない場合は送信を中止する。
+ *
+ * @param {string[]} original  normalizeImagesForRevise に渡した配列
+ * @param {string[]} final     normalizeImagesForRevise が返した配列
+ * @param {string}   itemId    eBay Item ID（ログ用）
+ * @param {number}   rowNumber 行番号（ログ用）
+ */
+function assertPictureCount(original, final, itemId, rowNumber) {
+  if (!original || original.length === 0) return;
+
+  if (final.length < original.length) {
+    Logger.log('❌ 層5: PICTURE_COUNT_MISMATCH 元=' + original.length + '枚 送信=' + final.length + '枚 ItemID=' + itemId + ' 行=' + rowNumber);
+    throw new Error(
+      'PICTURE_COUNT_MISMATCH: 画像消失リスクのため送信中止。\n' +
+      '元の枚数=' + original.length + '、正規化後=' + final.length + '枚。\n' +
+      'EPSアップロードが失敗した可能性があります。画像URLを確認してください。'
+    );
+  }
+}
+
+/**
+ * 層6: 2つの画像URL配列の差分を検出する。
+ *
+ * @param {string[]} ebayUrls  eBay側 (GetItem から取得)
+ * @param {string[]} sheetUrls シート側
+ * @returns {{ hasDivergence: boolean, ebayOnly: string[], sheetOnly: string[] }}
+ */
+function _detectImageDivergence(ebayUrls, sheetUrls) {
+  var ebayOnly  = (ebayUrls  || []).filter(function(u) { return (sheetUrls || []).indexOf(u) === -1; });
+  var sheetOnly = (sheetUrls || []).filter(function(u) { return (ebayUrls  || []).indexOf(u) === -1; });
+  return {
+    hasDivergence: ebayOnly.length > 0 || sheetOnly.length > 0,
+    ebayOnly:  ebayOnly,
+    sheetOnly: sheetOnly
+  };
+}
+
+/**
+ * 層6: ダイアログから呼び出される差分情報取得関数。
+ * PropertiesService に保存した差分情報を返す。
+ *
+ * @param {number} rowNumber 行番号
+ * @returns {Object|null}
+ */
+function getDivergenceInfo(rowNumber) {
+  var raw = PropertiesService.getUserProperties().getProperty('DIVERGENCE_INFO_' + rowNumber);
+  return raw ? JSON.parse(raw) : null;
+}
+
+/**
+ * 層6: ダイアログの選択結果を受けて更新を再開する。
+ * imageDivergenceDialog.html の submitChoice() から呼ばれる。
+ *
+ * @param {string}  spreadsheetId
+ * @param {number}  rowNumber
+ * @param {string}  choice  'use_ebay' | 'use_sheet' | 'cancel'
+ * @param {boolean} remember この出品で選択を記憶するか
+ * @returns {{ success: boolean, message: string }}
+ */
+function resumeReviseAfterDivergence(spreadsheetId, rowNumber, choice, remember) {
+  // 差分情報を読み出し
+  var infoKey = 'DIVERGENCE_INFO_' + rowNumber;
+  var raw = PropertiesService.getUserProperties().getProperty(infoKey);
+  if (!raw) {
+    return { success: false, message: '差分情報が見つかりません (タイムアウトの可能性)' };
+  }
+  var info = JSON.parse(raw);
+  PropertiesService.getUserProperties().deleteProperty(infoKey);
+
+  if (choice === 'cancel') {
+    // 保留フラグを行に立てる（出品シートの「保留」列があれば書き込む）
+    try {
+      if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+      var ss     = getTargetSpreadsheet();
+      var sheet  = ss.getSheetByName(SHEET_NAMES.LISTING);
+      if (sheet) {
+        var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+        var hMap = {};
+        headers.forEach(function(h, i) { if (h) hMap[String(h).trim()] = i + 1; });
+        var holdCol = hMap['保留'] || hMap['HOLD'] || hMap['hold'];
+        if (holdCol) {
+          sheet.getRange(rowNumber, holdCol).setValue('画像差分保留');
+          Logger.log('層6: 行' + rowNumber + ' 保留フラグ書き込み');
+        }
+      }
+    } catch (e) {
+      Logger.log('⚠️ 保留フラグ書き込みエラー: ' + e.toString());
+    } finally {
+      CURRENT_SPREADSHEET_ID = null;
+    }
+    return { success: false, skipped: true, message: '更新をキャンセルしました' };
+  }
+
+  // 解決済みURL配列を決定
+  var resolvedUrls = choice === 'use_ebay' ? info.ebayUrls : info.sheetUrls;
+
+  // 記憶オプション
+  if (remember && info.itemId) {
+    PropertiesService.getDocumentProperties().setProperty(
+      'imageDivergence_' + info.itemId,
+      choice
+    );
+    Logger.log('層6: ItemID=' + info.itemId + ' の選択を記憶: ' + choice);
+  }
+
+  // DIVERGENCE_CHOICE を保存して reviseFixedPriceItem を再呼び出し
+  PropertiesService.getUserProperties().setProperty(
+    'DIVERGENCE_CHOICE_' + rowNumber,
+    JSON.stringify({ choice: choice, resolvedUrls: resolvedUrls })
+  );
+
+  var result = reviseFixedPriceItem(spreadsheetId, rowNumber);
+
+  // 更新成功後、シート列に解決済みURLを書き戻す（ポップアップ永続ループ防止）
+  // use_ebay: eBay側EPS URLをそのまま書き戻す
+  // use_sheet: Layer1で正規化されたEPS URLを書き戻す
+  if (result && result.success) {
+    var urlsToWrite = (choice === 'use_ebay') ? info.ebayUrls : result.finalImages;
+    if (urlsToWrite && urlsToWrite.length > 0) {
+      _writeDivergenceResolvedUrlsToSheet(spreadsheetId, rowNumber, urlsToWrite);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * 層6: 差分解決後の画像URLをシート列に書き戻す。
+ * use_ebay / use_sheet 選択後にポップアップが再発しないよう、
+ * extractImageUrls() と同じ列順 (画像1〜23 → ストア画像) でURLを書き込む。
+ *
+ * @param {string}   spreadsheetId
+ * @param {number}   rowNumber
+ * @param {string[]} resolvedUrls  書き戻すURL配列（use_ebay: eBay URLs / use_sheet: Layer1正規化済みURLs）
+ */
+function _writeDivergenceResolvedUrlsToSheet(spreadsheetId, rowNumber, resolvedUrls) {
+  try {
+    if (!resolvedUrls || resolvedUrls.length === 0) return;
+
+    if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+    var sheet = getTargetSpreadsheet(spreadsheetId).getSheetByName(SHEET_NAMES.LISTING);
+    if (!sheet) return;
+
+    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    var hMap = {};
+    headers.forEach(function(h, i) { if (h) hMap[String(h).trim()] = i + 1; });
+
+    // extractImageUrls() と同じ列走査順: 画像1〜23 → ストア画像
+    var colNames = [];
+    for (var i = 1; i <= 23; i++) colNames.push('画像' + i);
+    colNames.push('ストア画像');
+
+    var urlIdx = 0;
+    var writeCount = 0;
+    for (var ci = 0; ci < colNames.length && urlIdx < resolvedUrls.length; ci++) {
+      var colNum = hMap[colNames[ci]];
+      if (!colNum) continue;
+
+      // 値が存在する列のみ書き戻す (extractImageUrls() が値ありの列のみ取得するのと対応)
+      var currentVal = String(sheet.getRange(rowNumber, colNum).getDisplayValue()).trim();
+      if (!currentVal) continue;
+
+      if (resolvedUrls[urlIdx]) {
+        sheet.getRange(rowNumber, colNum).setValue(resolvedUrls[urlIdx]);
+        writeCount++;
+      }
+      urlIdx++;
+    }
+
+    Logger.log('層6: 解決済みURL書き戻し完了: ' + writeCount + '列');
+  } catch (writeErr) {
+    Logger.log('⚠️ 層6: シート書き戻しエラー（更新は完了済み）: ' + writeErr.toString());
   } finally {
     CURRENT_SPREADSHEET_ID = null;
   }
 }
-

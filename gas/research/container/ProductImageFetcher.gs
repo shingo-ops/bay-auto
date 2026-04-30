@@ -4,6 +4,48 @@
  */
 
 /**
+ * HTTP GETを最大maxRetries回リトライして取得
+ * 500系エラーの場合は2秒待機後リトライ
+ *
+ * @param {string} url 取得先URL
+ * @param {Object} options UrlFetchApp オプション
+ * @param {number} maxRetries 最大リトライ回数（デフォルト3）
+ * @returns {HTTPResponse} 成功レスポンス
+ */
+function fetchWithRetry(url, options, maxRetries) {
+  maxRetries = maxRetries || 3;
+  var lastError = null;
+
+  for (var i = 0; i < maxRetries; i++) {
+    try {
+      var response = UrlFetchApp.fetch(url, options);
+      var code = response.getResponseCode();
+
+      if (code >= 200 && code < 300) {
+        return response;
+      }
+
+      Logger.log('  ⚠️ HTTP ' + code + ' (試行 ' + (i + 1) + '/' + maxRetries + ')');
+
+      if (code >= 500 && i < maxRetries - 1) {
+        Utilities.sleep(2000);
+        continue;
+      }
+
+      lastError = new Error('HTTP ' + code + ': ページ取得失敗');
+    } catch (e) {
+      lastError = e;
+      if (i < maxRetries - 1) {
+        Logger.log('  ⚠️ エラー (試行 ' + (i + 1) + '/' + maxRetries + '): ' + e.toString());
+        Utilities.sleep(2000);
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+/**
  * 商品ページURLから画像URLを抽出して配列で返す
  *
  * @param {string} productPageUrl 商品ページURL
@@ -18,6 +60,13 @@ function extractImageUrlsFromProductPage(productPageUrl) {
 
     const url = productPageUrl.toString();
     Logger.log('商品ページURL: ' + url);
+
+    // ツール設定シートの「画像取得」列で対応チェック
+    if (!isImageSupportedForUrl(url)) {
+      const siteName = getSiteName(url);
+      Logger.log('⚠️ ' + siteName + ' は画像取得非対応（ツール設定シートで「対応」設定なし）');
+      return [];
+    }
 
     // メルカリ
     if (url.includes('mercari.com')) {
@@ -248,8 +297,8 @@ function extractYahooFleaMarketImageUrls(productPageUrl) {
   try {
     Logger.log('🛍️ Yahoo!フリマ商品ページから画像を抽出中...');
 
-    // HTMLを取得
-    const response = UrlFetchApp.fetch(productPageUrl, {
+    // HTMLを取得（500系エラー時は最大3回リトライ）
+    const fetchOptions = {
       method: 'GET',
       muteHttpExceptions: true,
       followRedirects: true,
@@ -258,8 +307,8 @@ function extractYahooFleaMarketImageUrls(productPageUrl) {
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3'
       }
-    });
-
+    };
+    const response = fetchWithRetry(productPageUrl, fetchOptions, 3);
     const responseCode = response.getResponseCode();
     if (responseCode !== 200) {
       Logger.log('HTTP ' + responseCode + ': ページ取得失敗');
@@ -269,8 +318,33 @@ function extractYahooFleaMarketImageUrls(productPageUrl) {
     const html = response.getContentText('UTF-8');
     Logger.log('HTML取得完了: ' + html.length + ' バイト');
 
-    // auctions.c.yimg.jp ドメインの画像URLを抽出（Yahoo!フリマはヤフオクと同じCDNを使用）
-    // src="..." または data-src="..." から抽出
+    // ── 方法①: __NEXT_DATA__ JSONからitem.imagesを直接取得（関連商品混入を防ぐ） ──
+    const nextDataMatch = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+    if (nextDataMatch) {
+      try {
+        // 商品説明中の制御文字（改行等）を除去してからJSONパース
+        const cleaned = nextDataMatch[1].replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
+        const nextData = JSON.parse(cleaned);
+        const item = nextData.props.initialState.itemsState.items.item;
+        if (item && item.images && item.images.length > 0) {
+          const urls = item.images
+            .map(function(img) { return img.url || ''; })
+            .filter(function(url) { return url.length > 0; });
+          Logger.log('✅ NEXT_DATA経由で ' + urls.length + '枚取得（item.images）');
+          urls.forEach(function(url, i) {
+            Logger.log('  ✓ 画像' + (i + 1) + ': ' + url);
+          });
+          return urls.slice(0, 20);
+        }
+        Logger.log('⚠️ item.images が空のため正規表現フォールバック');
+      } catch (jsonErr) {
+        Logger.log('⚠️ NEXT_DATA JSONパース失敗、正規表現フォールバック: ' + jsonErr.toString());
+      }
+    }
+
+    // ── 方法②: フォールバック（auctions.c.yimg.jp を正規表現で抽出） ──
+    // ※ 関連商品の画像が混入する可能性あり
+    Logger.log('🔄 正規表現フォールバックで画像抽出中...');
     const pattern = /(?:src|data-src)="(https:\/\/auctions\.c\.yimg\.jp[^"]+\.(jpg|jpeg|png|webp))"/g;
     const seen = new Set();
     const imageUrls = [];
@@ -286,8 +360,8 @@ function extractYahooFleaMarketImageUrls(productPageUrl) {
       if (imageUrls.length >= 20) break;
     }
 
-    Logger.log('✅ ' + imageUrls.length + '枚の画像を検出');
-    return imageUrls.slice(0, 20); // 最大20枚
+    Logger.log('✅ ' + imageUrls.length + '枚の画像を検出（正規表現）');
+    return imageUrls.slice(0, 20);
 
   } catch (error) {
     Logger.log('extractYahooFleaMarketImageUrlsエラー: ' + error.toString());
@@ -326,47 +400,62 @@ function extractYahooShoppingImageUrls(productPageUrl) {
     const html = response.getContentText('UTF-8');
     Logger.log('HTML取得完了: ' + html.length + ' バイト');
 
-    // __NEXT_DATA__ タグ内のJSONを抽出（Next.js SSR）
-    const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/);
-    if (!match) {
-      Logger.log('⚠️ __NEXT_DATA__ が見つかりませんでした');
-      Logger.log('Yahoo!ショッピングのページ構造が変更された可能性があります');
-      return [];
-    }
+    // ── 方法①: __NEXT_DATA__ JSONからdisplayItemImageListを取得 ──
+    const nextDataMatch = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+    if (nextDataMatch) {
+      try {
+        const nextData = JSON.parse(nextDataMatch[1]);
+        Logger.log('✓ __NEXT_DATA__ JSON解析成功');
 
-    try {
-      const nextData = JSON.parse(match[1]);
-      Logger.log('✓ __NEXT_DATA__ JSON解析成功');
-
-      // 画像リストを取得
-      const displayList = nextData.props.pageProps.item.images.displayItemImageList;
-
-      if (!displayList || displayList.length === 0) {
-        Logger.log('⚠️ 画像リストが空です');
-        return [];
-      }
-
-      Logger.log('画像リスト取得: ' + displayList.length + '件');
-
-      // 高解像度URL（/i/n/ → /i/g/）に変換
-      const imageUrls = [];
-      for (let i = 0; i < displayList.length; i++) {
-        const img = displayList[i];
-        if (img && img.src) {
-          // 通常サイズ (/i/n/) を高解像度 (/i/g/) に変換
-          const highResUrl = img.src.replace('/i/n/', '/i/g/');
-          imageUrls.push(highResUrl);
-          Logger.log('  ✓ 画像' + (i + 1) + ': ' + highResUrl);
+        const displayList = nextData.props.pageProps.item.images.displayItemImageList;
+        if (displayList && displayList.length > 0) {
+          const imageUrls = [];
+          for (let i = 0; i < displayList.length; i++) {
+            const img = displayList[i];
+            if (img && img.src) {
+              const highResUrl = img.src.replace('/i/n/', '/i/g/');
+              imageUrls.push(highResUrl);
+              Logger.log('  ✓ 画像' + (i + 1) + ': ' + highResUrl);
+            }
+          }
+          if (imageUrls.length > 0) {
+            Logger.log('✅ ' + imageUrls.length + '枚の画像を検出（NEXT_DATA）');
+            return imageUrls.slice(0, 20);
+          }
         }
+        Logger.log('⚠️ displayItemImageList が空か存在しない');
+      } catch (jsonError) {
+        Logger.log('⚠️ NEXT_DATA JSONパース失敗: ' + jsonError.toString());
       }
-
-      Logger.log('✅ ' + imageUrls.length + '枚の画像を検出（高解像度版）');
-      return imageUrls.slice(0, 20); // 最大20枚
-
-    } catch (jsonError) {
-      Logger.log('⚠️ JSON解析エラー: ' + jsonError.toString());
-      return [];
+    } else {
+      Logger.log('⚠️ __NEXT_DATA__ が見つかりませんでした（旧テンプレートor大容量ページ）');
     }
+
+    // ── 方法②: フォールバック — item-shopping.c.yimg.jp の imgタグから取得 ──
+    // NEXT_DATA未検出時（特定店舗の旧テンプレート: 718KB超の大容量ページ等）
+    Logger.log('🔄 item-shopping.c.yimg.jp imgタグフォールバック...');
+    const fbPattern = /(?:src|data-src|data-original)="(https:\/\/item-shopping\.c\.yimg\.jp\/i\/[^"]+\.(?:jpg|jpeg|png|webp))"/gi;
+    const fbSeen = new Set();
+    const fbUrls = [];
+    let fbMatch;
+    while ((fbMatch = fbPattern.exec(html)) !== null) {
+      const rawUrl = fbMatch[1];
+      // /i/n/ → /i/g/ 高解像度変換
+      const hiRes = rawUrl.replace('/i/n/', '/i/g/');
+      if (!fbSeen.has(hiRes)) {
+        fbSeen.add(hiRes);
+        fbUrls.push(hiRes);
+        Logger.log('  ✓ 画像' + fbUrls.length + ': ' + hiRes);
+      }
+      if (fbUrls.length >= 20) break;
+    }
+    if (fbUrls.length > 0) {
+      Logger.log('✅ ' + fbUrls.length + '枚の画像を検出（imgタグフォールバック）');
+      return fbUrls.slice(0, 20);
+    }
+
+    Logger.log('❌ 画像URLが見つかりませんでした');
+    return [];
 
   } catch (error) {
     Logger.log('extractYahooShoppingImageUrlsエラー: ' + error.toString());
@@ -383,6 +472,12 @@ function extractYahooShoppingImageUrls(productPageUrl) {
 function extractRakutenImageUrls(productPageUrl) {
   try {
     Logger.log('🛒 楽天市場商品ページから画像を抽出中...');
+
+    // URLからショップIDを取得（JSON画像URLの構築に使用）
+    // 例: https://item.rakuten.co.jp/golf-kace02/xxx/ → shopId = "golf-kace02"
+    const shopIdMatch = productPageUrl.match(/item\.rakuten\.co\.jp\/([^\/]+)\//);
+    const shopId = shopIdMatch ? shopIdMatch[1] : null;
+    Logger.log('ショップID: ' + (shopId || '不明'));
 
     // HTMLを取得
     const response = UrlFetchApp.fetch(productPageUrl, {
@@ -408,30 +503,66 @@ function extractRakutenImageUrls(productPageUrl) {
     const imageUrls = [];
     const seen = new Set();
 
-    // ① img-box内の画像を順番通りに抽出（サイト表示順を保証）
-    // 例: <div class="img-box"> <img src="https://image.rakuten.co.jp/..." alt="商品画像1">
-    //     <div class="img-box"> <a...> <img src="https://image.rakuten.co.jp/..." alt="商品画像2">
-    const imgBoxPattern = /<div class="img-box">\s*(?:<a[^>]*>)?\s*<img src="(https:\/\/image\.rakuten\.co\.jp[^"]+)"/g;
-
-    let match;
-    while ((match = imgBoxPattern.exec(html)) !== null) {
-      const url = match[1];
-      if (!seen.has(url)) {
-        seen.add(url);
-        imageUrls.push(url);
-        Logger.log('  ✓ 画像' + imageUrls.length + ': ' + url);
+    // ① scriptタグ内のJSON "images":[{"type":"CABINET","location":"/xxx_1.jpg"...}] を抽出
+    // 実サイト調査で確認: window変数にSSRで埋め込まれた構造化データ
+    if (shopId) {
+      const imagesJsonPattern = /"images":\[([^\]]+)\]/g;
+      let jsonMatch;
+      while ((jsonMatch = imagesJsonPattern.exec(html)) !== null) {
+        const block = jsonMatch[1];
+        const locationPattern = /"location":"(\/[^"]+\.(jpg|jpeg|png|webp))"/gi;
+        let locMatch;
+        while ((locMatch = locationPattern.exec(block)) !== null) {
+          const location = locMatch[1];
+          // /cat/ を含むパスはサービスバッジ・バナー画像のため除外
+          // 例: /cat/sign/r_asuraku.jpg（あす楽）, /cat/sign/r_haisou.jpg（配送）等
+          if (location.indexOf('/cat/') !== -1) {
+            Logger.log('  スキップ（バナー: ' + location + '）');
+            continue;
+          }
+          const fullUrl = 'https://tshop.r10s.jp/' + shopId + '/cabinet' + location;
+          if (!seen.has(fullUrl)) {
+            seen.add(fullUrl);
+            imageUrls.push(fullUrl);
+            Logger.log('  ✓ JSON画像' + imageUrls.length + ': ' + fullUrl);
+          }
+        }
+        if (imageUrls.length > 0) break; // 最初のimages配列で確定
       }
+      Logger.log('① JSON抽出: ' + imageUrls.length + '枚');
     }
 
-    Logger.log('✓ img-box内の画像: ' + imageUrls.length + '枚（表示順）');
+    // ② imgタグから tshop.r10s.jp を直接抽出（SSRで存在）
+    // shopId で絞り込むことで他店舗・関連商品の画像混入を防ぐ
+    if (imageUrls.length === 0 && shopId) {
+      Logger.log('② imgタグから直接抽出を試みます（shopId絞り込み）...');
+      // shopId を含む tshop.r10s.jp / shop.r10s.jp のみマッチ
+      const shopPattern = new RegExp(
+        'src="(https://(?:tshop|shop)\\.r10s\\.jp/' + shopId + '/[^"]+\\.(?:jpg|jpeg|png|webp))"',
+        'gi'
+      );
+      let imgMatch;
+      while ((imgMatch = shopPattern.exec(html)) !== null) {
+        const url = imgMatch[1];
+        // /cat/ を含むパスはバナー画像のため除外
+        if (url.indexOf('/cat/') !== -1) continue;
+        if (!seen.has(url)) {
+          seen.add(url);
+          imageUrls.push(url);
+          Logger.log('  ✓ img画像' + imageUrls.length + ': ' + url);
+        }
+        if (imageUrls.length >= 20) break;
+      }
+      Logger.log('② imgタグ抽出: ' + imageUrls.length + '枚');
+    }
 
-    // ② img-boxが見つからない場合のフォールバック: og:image
+    // ③ 最終フォールバック: og:image（一部店舗）
     if (imageUrls.length === 0) {
-      Logger.log('⚠️ img-box内の画像が見つかりません。og:imageを使用します。');
-      const ogImageMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/);
-      if (ogImageMatch) {
-        imageUrls.push(ogImageMatch[1]);
-        Logger.log('✓ og:image取得: ' + ogImageMatch[1]);
+      Logger.log('③ og:imageフォールバック...');
+      const ogMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/);
+      if (ogMatch) {
+        imageUrls.push(ogMatch[1]);
+        Logger.log('  ✓ og:image: ' + ogMatch[1]);
       }
     }
 
@@ -440,17 +571,8 @@ function extractRakutenImageUrls(productPageUrl) {
       return [];
     }
 
-    Logger.log('');
-    Logger.log('--- 画像URL一覧（サイト表示順） ---');
-    for (let i = 0; i < Math.min(imageUrls.length, 10); i++) {
-      Logger.log('  ' + (i + 1) + '. ' + imageUrls[i]);
-    }
-    if (imageUrls.length > 10) {
-      Logger.log('  ... 他 ' + (imageUrls.length - 10) + '件');
-    }
-
-    Logger.log('✅ ' + imageUrls.length + '枚の画像を検出（表示順保証）');
-    return imageUrls.slice(0, 20); // 最大20枚
+    Logger.log('✅ ' + imageUrls.length + '枚の画像を検出');
+    return imageUrls.slice(0, 20);
 
   } catch (error) {
     Logger.log('extractRakutenImageUrlsエラー: ' + error.toString());
@@ -768,27 +890,50 @@ function extractOffmallImageUrls(productPageUrl) {
     const html = response.getContentText('UTF-8');
     Logger.log('HTML取得完了: ' + html.length + ' バイト');
 
-    // imageflux.jp ドメインの画像URLを抽出（オフモール専用CDN）
-    // 例: https://p1-d9ebd2ee.imageflux.jp/c!/w=1280,h=1280,a=0,u=1,q=75/131002/2026_04_01_16_14_19.jpg
+    // imageflux.jp ドメインの画像URLを全て抽出
+    // HTML構造分析に基づく3段階フィルタで商品画像のみを残す:
+    //   フィルタ1: /portal/ or /cmp/ を含むURL除外（バナー: p1-b946b961.imageflux.jp）
+    //   フィルタ2: u=0 を含むURL除外（サムネイル: w=231,h=182 の小サイズ版）
+    //   フィルタ3: q=90 を含むURL除外（関連商品セクション）
+    // 残るのは u=1,q=75 の商品自身の高解像度画像のみ
     const imgPattern = /https:\/\/[^"']+imageflux\.jp\/[^"']+\.(?:jpg|jpeg|png|gif|webp)/g;
-    const matches = html.match(imgPattern) || [];
+    let matches = html.match(imgPattern) || [];
+    Logger.log('  imageflux.jp 画像 全件: ' + matches.length + '件');
 
-    // 重複除去（順番は維持）
-    const seen = new Set();
+    // フィルタ1: バナー画像除外（/portal/ or /cmp/）
+    matches = matches.filter(function(url) {
+      return url.indexOf('/portal/') === -1 && url.indexOf('/cmp/') === -1;
+    });
+    Logger.log('  バナー除外後: ' + matches.length + '件');
+
+    // フィルタ2: サムネイル除外（u=0）
+    matches = matches.filter(function(url) {
+      return url.indexOf(',u=0,') === -1;
+    });
+    Logger.log('  サムネイル除外後: ' + matches.length + '件');
+
+    // フィルタ3: 関連商品セクション除外（q=90）
+    matches = matches.filter(function(url) {
+      return url.indexOf(',q=90/') === -1;
+    });
+    Logger.log('  関連商品除外後: ' + matches.length + '件');
+
+    // ファイル名ベースで重複除去（順番維持）
+    const seenFileNames = {};
     const imageUrls = [];
-
     for (let i = 0; i < matches.length; i++) {
-      const url = matches[i];
-      if (!seen.has(url)) {
-        seen.add(url);
-        imageUrls.push(url);
-        Logger.log('  ✓ 画像' + imageUrls.length + ': ' + url);
+      const parts = matches[i].split('/');
+      const fileName = parts[parts.length - 1];
+      if (!seenFileNames[fileName]) {
+        seenFileNames[fileName] = true;
+        imageUrls.push(matches[i]);
+        Logger.log('  ✓ 画像' + imageUrls.length + ': ' + matches[i]);
       }
-      if (imageUrls.length >= 20) break; // 最大20枚
+      if (imageUrls.length >= 20) break;
     }
 
-    Logger.log('✅ ' + imageUrls.length + '枚の画像を検出');
-    return imageUrls.slice(0, 20); // 最大20枚
+    Logger.log('✅ ' + imageUrls.length + '枚の商品画像を検出（u=1,q=75）');
+    return imageUrls.slice(0, 20);
 
   } catch (error) {
     Logger.log('extractOffmallImageUrlsエラー: ' + error.toString());

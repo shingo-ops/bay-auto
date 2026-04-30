@@ -94,6 +94,7 @@ function checkAndRefreshToken(spreadsheetId) {
     }
 
   } catch (error) {
+    Logger.log('❌ checkAndRefreshToken エラー: ' + error.toString());
     return { valid: false, refreshed: false, error: error.toString() };
   }
 }

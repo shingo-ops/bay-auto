@@ -135,6 +135,16 @@ function menuCreateListing(spreadsheetId, rowNumber) {
     // 出品実行
     const result = createListing(spreadsheetId, rowNumber);
 
+    // 出品失敗チェック
+    if (!result || !result.success) {
+      var errorMsg = (result && result.message) ? result.message : '不明なエラーが発生しました';
+      Logger.log('❌ 出品失敗: ' + errorMsg);
+      return {
+        success: false,
+        message: errorMsg
+      };
+    }
+
     Logger.log('✅ 出品完了');
     Logger.log('- SKU: ' + result.sku);
     Logger.log('- Item ID: ' + result.itemId);

@@ -390,6 +390,19 @@ function getEbayConfig() {
 }
 
 /**
+ * ツール設定シートの生キー値マップを返す
+ * container側の _getListingToolConfig_() の置き換え用
+ * getConfig() と同じ形式: { 'App ID': '...', 'RuName': '...', ... }
+ *
+ * @param {string} spreadsheetId
+ * @returns {Object} ツール設定の生キー値マップ
+ */
+function getListingToolConfig(spreadsheetId) {
+  if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId;
+  return getConfig();
+}
+
+/**
  * User Tokenを取得（"ツール設定"シートから）
  *
  * @returns {string} User Token
@@ -434,6 +447,34 @@ const TRADING_API_VERSION = '1355';
  */
 function getMarketingApiUrl() {
   return 'https://api.ebay.com/sell/marketing/v1';
+}
+
+/**
+ * 画像差分検出時の動作モードをツール設定シートから取得。
+ *
+ * ツール設定シートの「項目」列に "IMAGE_DIVERGENCE_MODE" という行を追加し、
+ * 「値」列に以下のいずれかを設定:
+ *   prompt             : 差分を検出したらポップアップで選択（デフォルト）
+ *   prefer_ebay        : 自動的にeBay側を採用してログに記録
+ *   skip_on_divergence : 差分があれば該当行をスキップ
+ *   disabled           : 差分チェック自体を無効化
+ *
+ * @returns {string} 'prompt' | 'prefer_ebay' | 'skip_on_divergence' | 'disabled'
+ */
+function getImageDivergenceMode() {
+  try {
+    var config = getConfig();
+    var mode = String(config['IMAGE_DIVERGENCE_MODE'] || 'prompt').trim().toLowerCase();
+    var valid = ['prompt', 'prefer_ebay', 'skip_on_divergence', 'disabled'];
+    if (valid.indexOf(mode) === -1) {
+      Logger.log('⚠️ 不明なIMAGE_DIVERGENCE_MODE値: "' + mode + '" → "prompt" を使用');
+      return 'prompt';
+    }
+    return mode;
+  } catch (e) {
+    Logger.log('⚠️ IMAGE_DIVERGENCE_MODE取得失敗: ' + e.toString() + ' → "prompt" を使用');
+    return 'prompt';
+  }
 }
 
 /**

@@ -9,6 +9,63 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /**
+ * Item URLとスペックURLのカテゴリID整合性チェック
+ * 不一致の場合はui.promptで 1 / 2 の選択を求める
+ * itemInfo / specInfo の category フィールドをin-placeで書き換えて揃える
+ *
+ * @param {Object} itemInfo  {category: {categoryId, categoryName}, ...}
+ * @param {Object} specInfo  {category: {categoryId, categoryName}, ...}
+ * @returns {boolean} true=続行, false=キャンセル（転記中止）
+ */
+function checkCategoryMismatch(itemInfo, specInfo) {
+  if (!itemInfo || !itemInfo.category || !specInfo || !specInfo.category) {
+    Logger.log('⚠️ [カテゴリチェック] カテゴリ情報が不完全のためスキップ');
+    return true;
+  }
+
+  const itemCatId = itemInfo.category.categoryId;
+  const specCatId = specInfo.category.categoryId;
+
+  Logger.log('[カテゴリチェック] Item=' + itemCatId + ' / Spec=' + specCatId);
+
+  if (!itemCatId || !specCatId || itemCatId === specCatId) {
+    Logger.log('✅ [カテゴリチェック] 一致: ' + itemCatId);
+    return true;
+  }
+
+  const promptUi = SpreadsheetApp.getUi();
+  const promptRes = promptUi.prompt(
+    '⚠️ カテゴリ不一致',
+    'Item URL: ' + itemCatId + ' (' + (itemInfo.category.categoryName || '') + ')\n' +
+    'スペックURL: ' + specCatId + ' (' + (specInfo.category.categoryName || '') + ')\n\n' +
+    '1 → Item URLのカテゴリを使用\n' +
+    '2 → スペックURLのカテゴリを使用\n\n' +
+    '番号を入力してください:',
+    promptUi.ButtonSet.OK_CANCEL
+  );
+
+  if (promptRes.getSelectedButton() === promptUi.Button.CANCEL) {
+    Logger.log('[カテゴリチェック] ユーザーがキャンセル');
+    return false;
+  }
+
+  const choice = promptRes.getResponseText().trim();
+  if (choice === '1') {
+    Logger.log('[カテゴリチェック] Item URLを採用: ' + itemCatId);
+    specInfo.category.categoryId   = itemCatId;
+    specInfo.category.categoryName = itemInfo.category.categoryName;
+  } else if (choice === '2') {
+    Logger.log('[カテゴリチェック] スペックURLを採用: ' + specCatId);
+    itemInfo.category.categoryId   = specCatId;
+    itemInfo.category.categoryName = specInfo.category.categoryName;
+  } else {
+    promptUi.alert('1 または 2 を入力してください。転記を中止します。');
+    return false;
+  }
+  return true;
+}
+
+/**
  * 指定列で空白の最初の行を探す
  *
  * @param {Sheet} sheet シート
@@ -237,38 +294,7 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
     condition: researchSheet.getRange(RESEARCH_ITEM_LIST.DATA_ROW, RESEARCH_ITEM_LIST.COLUMNS.CONDITION.col).getValue()
   };
 
-  // カテゴリIDの整合性チェック: Item URLとスペックURLのカテゴリIDが異なる場合は警告して中止
-  Logger.log('カテゴリID整合性チェック開始...');
-  if (itemInfo && itemInfo.category && specInfo && specInfo.category) {
-    const itemCategoryId = itemInfo.category.categoryId;
-    const specCategoryId = specInfo.category.categoryId;
-
-    Logger.log('  - Item URLカテゴリID: ' + itemCategoryId);
-    Logger.log('  - スペックURLカテゴリID: ' + specCategoryId);
-
-    if (itemCategoryId && specCategoryId && itemCategoryId !== specCategoryId) {
-      const confirmMsg = '⚠️ カテゴリIDが一致しません。\n\n' +
-                         '【Item URL】\n' +
-                         '  ID: ' + itemCategoryId + '  ' + (itemInfo.category.categoryName || '') + '\n\n' +
-                         '【スペックURL】\n' +
-                         '  ID: ' + specCategoryId + '  ' + (specInfo.category.categoryName || '') + '\n\n' +
-                         'スペックURLのカテゴリ（' + specCategoryId + '）を採用して出品しますか？\n' +
-                         'キャンセルすると転記を中止します。';
-
-      Logger.log('⚠️ カテゴリID不一致: Item=' + itemCategoryId + ' / Spec=' + specCategoryId);
-      const uiForCategory = SpreadsheetApp.getUi();
-      const categoryResponse = uiForCategory.alert('カテゴリID確認', confirmMsg, uiForCategory.ButtonSet.OK_CANCEL);
-      if (categoryResponse !== uiForCategory.Button.OK) {
-        Logger.log('カテゴリID不一致: ユーザーがキャンセルしたため転記を中止');
-        throw new Error('カテゴリID不一致のため転記を中止しました');
-      }
-      Logger.log('✅ スペックURLのカテゴリIDを採用して続行: ' + specCategoryId);
-    }
-
-    Logger.log('✅ カテゴリIDが一致しています: ' + itemCategoryId);
-  } else {
-    Logger.log('⚠️ カテゴリ情報が不完全なため、整合性チェックをスキップします');
-  }
+  // カテゴリID整合性チェックは呼び出し元（transferListingDataWithPolicy）で実施済み
 
   // headerMappingから最大列数を決定
   Logger.log('headerMapping values: ' + JSON.stringify(Object.values(headerMapping).slice(0, 10)));
@@ -319,14 +345,10 @@ function prepareTransferDataWithMapping(itemInfo, specInfo, listingSheet, header
   // メモ
   setValueByHeader(LISTING_COLUMNS.MEMO.header, priceInfo.memo);
 
-  // 仕入元マッピングを1回だけ取得して3つのURLに使い回す
-  const srcMappings_ = getPurchaseSourceMappings();
+  // URLからサイト名を解決（ツール設定シートのサイトマスタを使用）
   const resolveSourceName_ = function(url) {
     if (!url || typeof url !== 'string') return '';
-    for (var _i = 0; _i < srcMappings_.length; _i++) {
-      if (url.indexOf(srcMappings_[_i].url) === 0) return srcMappings_[_i].name;
-    }
-    return getSiteNameFromImageUrl(url);
+    return getSiteName(url) || '不明';
   };
 
   // 仕入元①とURL①
@@ -599,10 +621,22 @@ function onListingButtonPolicy3() {
  * @param {string} policyLabel ポリシー名（表示用：Expedited, Economy, 書状）
  */
 function transferListingDataWithPolicy(policyRow, policyLabel) {
+  // 連打防止: スクリプトロックを即時取得
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(0)) {
+    SpreadsheetApp.getUi().alert(
+      '⚠️ 処理中',
+      '現在、別の出品処理を実行中です。\n完了までお待ちください。',
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+    return;
+  }
+
   // エラー時のクリーンアップ用の変数
   let reservedRow = null;
   let reservedSheet = null;
   let reservedSkuCol = null;
+  let logRow = null;
 
   try {
     Logger.log('===== 転記開始 =====');
@@ -683,8 +717,12 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
     SpreadsheetApp.getActiveSpreadsheet().toast('出品データを準備中...', '出品 (' + policyLabel + ')', 10);
 
     let itemInfo, specInfo;
+    let needsCacheSave = false;
     const cacheRow = getCacheRow2();
-    if (cacheRow) {
+    const currentItemUrl = normalizeCacheUrl(itemUrl.toString());
+
+    if (cacheRow && normalizeCacheUrl(cacheRow.itemUrl) === currentItemUrl) {
+      // URL一致 → キャッシュヒット
       Logger.log('[転記] _cache ヒット: ' + cacheRow.itemUrl);
       const fromCache = {
         item:      { categoryId: cacheRow.categoryId, categoryPath: cacheRow.categoryName },
@@ -697,10 +735,26 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
       itemInfo = fromCache;
       specInfo  = fromCache;
     } else {
-      // _cache が空の場合のみ API を呼び出す
-      Logger.log('[転記] _cache ミス: API フォールバック');
+      // URLミスマッチ or キャッシュなし → APIフォールバック
+      if (cacheRow) {
+        Logger.log('[転記] _cache URLミスマッチ（' + cacheRow.itemUrl + ' vs ' + itemUrl + '）: APIフォールバック');
+      } else {
+        Logger.log('[転記] _cache ミス: APIフォールバック');
+      }
+
       itemInfo = getProductInfoFromUrl(itemUrl.toString());
       specInfo  = getProductInfoFromUrl(specUrl.toString());
+      needsCacheSave = true;
+    }
+
+    // カテゴリID整合性チェック（統一ダイアログ）
+    if (!checkCategoryMismatch(itemInfo, specInfo)) {
+      return; // ユーザーキャンセル
+    }
+
+    // APIフォールバック時はキャッシュを新URLのデータで更新
+    if (needsCacheSave) {
+      saveCacheEntry(itemUrl.toString(), itemInfo);
     }
 
     // 転記先スプレッドシートを開く
@@ -765,11 +819,18 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
       }
     });
 
-    // データを転記
+    // 転記前: コンディション列の旧データ入力規則をクリア（前商品の規則が残存していると書き込みが拒否される）
+    const conditionColNum = getColumnByHeader(headerMapping, LISTING_COLUMNS.CONDITION.header);
+    if (conditionColNum) {
+      listingSheet.getRange(newRow, conditionColNum).clearDataValidations();
+    }
+
+    // データを転記（ログをsetValuesの直前に書き込む）
+    const listingHeaders = listingSheet.getRange(1, 1, 1, transferData.length).getValues()[0];
+    logRow = writeTransferLog(transferData, sku, listingHeaders);
     listingSheet.getRange(newRow, 1, 1, transferData.length).setValues([transferData]);
 
     // 出品シートのコンディション列にプルダウンを設定（選択済み値はsetValuesで転記済み）
-    const conditionColNum = getColumnByHeader(headerMapping, LISTING_COLUMNS.CONDITION.header);
     if (conditionColNum) {
       try {
         const conditionRule = buildConditionValidationRule(String(specInfo.category.categoryId || ''));
@@ -833,7 +894,17 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
           const now = new Date();
           const dateStr = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd');
           const timeStr = Utilities.formatDate(now, Session.getScriptTimeZone(), 'HHmmss');
-          const siteName = getSiteNameFromImageUrl(productPageUrl.toString()); // 商品ページURLからサイト名を判定
+          const siteName = getSiteName(productPageUrl.toString()); // 商品ページURLからサイト名を判定
+
+          // リサーチシートの「エラー」列を特定（13行目ヘッダー、14行目に書き込み）
+          const researchLastCol = researchSheet.getLastColumn();
+          const researchHeaderRow13 = researchSheet.getRange(13, 1, 1, researchLastCol).getValues()[0];
+          const errorColIndex = researchHeaderRow13.indexOf('エラー');
+          const errorCol = errorColIndex !== -1 ? errorColIndex + 1 : null;
+          if (!errorCol) {
+            Logger.log('⚠️ リサーチシート13行目に「エラー」ヘッダーが見つかりません');
+          }
+          const errorMessages = []; // 画像処理中のエラーを集約
 
           // 各画像をダウンロード
           const savedCount = Math.min(imageUrls.length, 23); // 最大23枚
@@ -848,31 +919,38 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
 
             const imageResult = downloadAndSaveImage(imageUrl, imageFolderUrl, baseFileName);
 
-            if (imageResult.success) {
-              // 画像1～23列に保存したURLを出力
-              const imageColumnKey = 'IMAGE_' + (i + 1);
-              const imageHeaderName = LISTING_COLUMNS[imageColumnKey] ? LISTING_COLUMNS[imageColumnKey].header : null;
+            // 画像列を特定
+            const imageColumnKey = 'IMAGE_' + (i + 1);
+            const imageHeaderName = LISTING_COLUMNS[imageColumnKey] ? LISTING_COLUMNS[imageColumnKey].header : null;
+            const imageCol = imageHeaderName ? getColumnByHeader(headerMapping, imageHeaderName) : null;
 
+            if (imageResult.success) {
               if (!imageHeaderName) {
                 Logger.log('⚠️ 警告: ' + imageColumnKey + ' がLISTING_COLUMNSに存在しません');
+              } else if (!imageCol) {
+                Logger.log('⚠️ 警告: 出品シートのヘッダー行（1行目）に「' + imageHeaderName + '」列が見つかりません。この画像の保存をスキップします。');
               } else {
-                const imageCol = getColumnByHeader(headerMapping, imageHeaderName);
-                Logger.log('画像' + (i + 1) + ': imageCol=' + imageCol + ', imageHeaderName=' + imageHeaderName);
-
-                if (!imageCol || imageCol === null || imageCol === undefined) {
-                  Logger.log('⚠️ 警告: 出品シートのヘッダー行（1行目）に「' + imageHeaderName + '」列が見つかりません。この画像の保存をスキップします。');
-                } else {
-                  listingSheet.getRange(newRow, imageCol).setValue(imageResult.driveUrl);
-                  Logger.log('✅ 画像' + (i + 1) + 'を' + imageCol + '列目(' + imageHeaderName + ')に保存: ' + imageResult.driveUrl);
-                }
+                listingSheet.getRange(newRow, imageCol).setValue(imageResult.driveUrl);
+                Logger.log('✅ 画像' + (i + 1) + 'を' + imageCol + '列目(' + imageHeaderName + ')に保存: ' + imageResult.driveUrl);
               }
             } else {
               Logger.log('❌ 画像' + (i + 1) + 'のダウンロードに失敗: ' + imageResult.message);
+              errorMessages.push('画像' + (i + 1) + ': ' + imageResult.message);
             }
 
             // レート制限対策
             if (i < savedCount - 1) {
               Utilities.sleep(500);
+            }
+          }
+
+          // エラーをリサーチシート「エラー」列14行目に書き込み（成功時はクリア）
+          if (errorCol) {
+            if (errorMessages.length > 0) {
+              researchSheet.getRange(14, errorCol).setValue('❌ DL失敗:\n' + errorMessages.join('\n'));
+              Logger.log('❌ 画像DL失敗をリサーチシートに記録: ' + errorMessages.length + '件');
+            } else {
+              researchSheet.getRange(14, errorCol).clearContent();
             }
           }
 
@@ -883,6 +961,11 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
         }
       } else {
         Logger.log('警告: 画像フォルダが設定されていないため、画像をスキップしました');
+        SpreadsheetApp.getUi().alert(
+          '⚠️ 画像フォルダ未設定',
+          '画像の保存先フォルダが設定されていないため、画像は保存されません。\n\n「ツール設定」シートの「画像フォルダURL」を設定してください。',
+          SpreadsheetApp.getUi().ButtonSet.OK
+        );
       }
     }
 
@@ -896,6 +979,7 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
     });
 
     Logger.log('出品データを転記しました（行: ' + newRow + '、SKU: ' + sku + '、Item Specifics色設定: ' + specColors.length + '件）');
+    updateTransferLogStatus(logRow, '成功', '');
 
     // 完了メッセージを表示
     const ui = SpreadsheetApp.getUi();
@@ -907,6 +991,7 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
 
   } catch (error) {
     Logger.log('transferListingDataWithPolicyエラー: ' + error.toString());
+    updateTransferLogStatus(logRow, 'エラー', error.toString());
 
     // エラー発生時: SKUで予約した行をクリア
     if (reservedRow && reservedSheet && reservedSkuCol) {
@@ -921,6 +1006,8 @@ function transferListingDataWithPolicy(policyRow, policyLabel) {
     }
 
     SpreadsheetApp.getUi().alert('転記エラー:\n\n' + error.toString());
+  } finally {
+    lock.releaseLock();
   }
 }
 

@@ -454,6 +454,7 @@ function _rebuildConditionDropdown(spreadsheetId, sheet, row, headerMap, conditi
         try {
           jaMap = JSON.parse(data[i][jaMapIdx] || '{}');
         } catch (e) {
+          Logger.log('❌ ja_map_json パースエラー: ' + e.toString());
           jaMap = null;
         }
         break;

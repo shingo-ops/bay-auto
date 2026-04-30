@@ -1,0 +1,44 @@
+# 環境変数・シークレット
+.env
+.env.*
+*.secret
+secrets/
+credentials/
+*_credentials.json
+service_account.json
+
+# clasp 認証情報
+.clasprc.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# エディタ
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ログ・一時ファイル
+*.log
+tmp/
+temp/

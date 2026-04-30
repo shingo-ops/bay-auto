@@ -4,6 +4,112 @@
  * 汎用的なヘルパー関数を定義
  */
 
+// サイトマスタキャッシュ（スクリプト実行内で再利用）
+var _siteMasterCache = null;
+
+/**
+ * ツール設定シートからサイトマスタを読み込む（実行内キャッシュ付き）
+ * 「サイト名」「ドメイン」「画像取得」のヘッダー行を動的に検索
+ *
+ * @returns {Array<{name: string, domain: string, imageSupported: boolean}>}
+ *   ドメイン長降順（具体的なものを先に判定するため）
+ *   imageSupported: 「画像取得」列に「対応」と記載された場合のみ true
+ */
+function getSiteMaster() {
+  if (_siteMasterCache !== null) return _siteMasterCache;
+
+  const settingsSheet = ss.getSheetByName(SHEET_NAMES.SETTINGS);
+  if (!settingsSheet) {
+    Logger.log('⚠️ [getSiteMaster] ツール設定シートが見つかりません');
+    _siteMasterCache = [];
+    return _siteMasterCache;
+  }
+
+  const data = settingsSheet.getDataRange().getValues();
+  _siteMasterCache = [];
+
+  // 「サイト名」「ドメイン」が同じ行に揃っているヘッダー行を動的に探す
+  // 「画像取得」列はオプション（存在しない場合は imageSupported が常に false）
+  let startRow  = -1;
+  let nameCol   = -1;
+  let domainCol = -1;
+  let imageCol  = -1;
+
+  for (let i = 0; i < data.length; i++) {
+    let nc = -1;
+    let dc = -1;
+    let ic = -1;
+    for (let j = 0; j < data[i].length; j++) {
+      const cell = String(data[i][j] || '').trim();
+      if (cell === 'サイト名') nc = j;
+      if (cell === 'ドメイン')  dc = j;
+      if (cell === '画像取得') ic = j;
+    }
+    if (nc !== -1 && dc !== -1) {
+      startRow  = i + 1;
+      nameCol   = nc;
+      domainCol = dc;
+      imageCol  = ic; // -1 の場合は列なし（imageSupported は常に false）
+      break;
+    }
+  }
+
+  if (startRow === -1) {
+    Logger.log('⚠️ [getSiteMaster] ツール設定シートにサイト名/ドメインマッピングが見つかりません');
+    return _siteMasterCache;
+  }
+
+  Logger.log('[getSiteMaster] 画像取得列: ' + (imageCol >= 0 ? '列' + (imageCol + 1) : '未設定'));
+
+  for (let i = startRow; i < data.length; i++) {
+    const name   = String(data[i][nameCol]   || '').trim();
+    const domain = String(data[i][domainCol] || '').trim().toLowerCase();
+    if (!name || !domain) break; // 空行で終了
+    const imageSupported = imageCol >= 0 && String(data[i][imageCol] || '').trim() === '対応';
+    _siteMasterCache.push({ name: name, domain: domain, imageSupported: imageSupported });
+  }
+
+  // ドメインが長い順にソート（より具体的なドメインを先にヒットさせる）
+  _siteMasterCache.sort(function(a, b) { return b.domain.length - a.domain.length; });
+
+  Logger.log('[getSiteMaster] サイトマスタ読み込み: ' + _siteMasterCache.length + '件');
+  return _siteMasterCache;
+}
+
+/**
+ * URLに対してツール設定シートの「画像取得」列が「対応」かを返す
+ *
+ * @param {string} url 商品ページURL
+ * @returns {boolean} true = 画像取得対応、false = 非対応または未登録
+ */
+function isImageSupportedForUrl(url) {
+  if (!url) return false;
+  const u = url.toString().toLowerCase();
+  const master = getSiteMaster();
+  for (let i = 0; i < master.length; i++) {
+    if (u.indexOf(master[i].domain) !== -1) {
+      return master[i].imageSupported;
+    }
+  }
+  return false; // 未登録サイトは非対応
+}
+
+/**
+ * URLからサイト名を判定（ツール設定シートのサイトマスタを使用・indexOf部分一致）
+ *
+ * @param {string} url 商品ページURL または 画像URL
+ * @returns {string} サイト名（マスタ未登録の場合は '不明'）
+ */
+function getSiteName(url) {
+  if (!url) return '不明';
+  const u = url.toString().toLowerCase();
+  const master = getSiteMaster();
+  for (let i = 0; i < master.length; i++) {
+    if (u.indexOf(master[i].domain) !== -1) return master[i].name;
+  }
+  return '不明';
+}
+
 /**
  * 日付を yyyy-MM-dd HH:mm:ss 形式でフォーマット
  *
@@ -237,58 +343,6 @@ function randomDelay(minMs, maxMs) {
   Utilities.sleep(delay);
 }
 
-/**
- * 画像URLから取得元サイト名を判定
- *
- * @param {string} imageUrl 画像URL
- * @returns {string} サイト名（eBay, メルカリ, ヤフオク, 不明）
- */
-function getSiteNameFromImageUrl(imageUrl) {
-  if (!imageUrl || typeof imageUrl !== 'string') {
-    return '不明';
-  }
-
-  const url = imageUrl.toLowerCase();
-
-  // eBay
-  if (url.includes('ebayimg.com') || url.includes('ebay.com')) {
-    return 'eBay';
-  }
-
-  // メルカリ
-  if (url.includes('mercdn.net') || url.includes('mercari.com')) {
-    return 'メルカリ';
-  }
-
-  // ヤフオク
-  if (url.includes('yimg.jp') || url.includes('yahoo.co.jp')) {
-    return 'ヤフオク';
-  }
-
-  // Amazon
-  if (url.includes('amazon.co.jp') || url.includes('amazon.com') ||
-      url.includes('m.media-amazon.com') || url.includes('images-na.ssl-images-amazon.com')) {
-    return 'Amazon';
-  }
-
-  // オフモール（ハードオフ・オフハウス等）
-  if (url.includes('imageflux.jp') || url.includes('netmall.hardoff.co.jp')) {
-    return 'オフモール';
-  }
-
-  // 駿河屋
-  if (url.includes('cdn.suruga-ya.jp') || url.includes('suruga-ya.jp')) {
-    return '駿河屋';
-  }
-
-  // デジマート
-  if (url.includes('img.digimart.net') || url.includes('digimart.net')) {
-    return 'デジマート';
-  }
-
-  // その他
-  return '不明';
-}
 
 /**
  * リサーチシートからポリシー別のデータを取得
@@ -420,23 +474,18 @@ function getPurchaseSourceMappings() {
       }
     }
 
-    // 「仕入元」列と「仕入元URL」列のインデックスを取得
-    // 複数のヘッダー名候補に対応
-    let purchaseSourceColIndex = columnMap['仕入元'];
-    if (purchaseSourceColIndex === undefined) {
-      purchaseSourceColIndex = columnMap['仕入元名'];
-    }
+    // 「サイト名」「ドメイン」列のインデックスを取得（旧ヘッダー名もフォールバックとして対応）
+    let purchaseSourceColIndex = columnMap['サイト名'];
+    if (purchaseSourceColIndex === undefined) purchaseSourceColIndex = columnMap['仕入元'];
+    if (purchaseSourceColIndex === undefined) purchaseSourceColIndex = columnMap['仕入元名'];
 
-    let purchaseSourceUrlColIndex = columnMap['仕入元URL'];
-    if (purchaseSourceUrlColIndex === undefined) {
-      purchaseSourceUrlColIndex = columnMap['URL'];
-    }
-    if (purchaseSourceUrlColIndex === undefined) {
-      purchaseSourceUrlColIndex = columnMap['仕入元トップページURL'];
-    }
+    let purchaseSourceUrlColIndex = columnMap['ドメイン'];
+    if (purchaseSourceUrlColIndex === undefined) purchaseSourceUrlColIndex = columnMap['仕入元URL'];
+    if (purchaseSourceUrlColIndex === undefined) purchaseSourceUrlColIndex = columnMap['URL'];
+    if (purchaseSourceUrlColIndex === undefined) purchaseSourceUrlColIndex = columnMap['仕入元トップページURL'];
 
     if (purchaseSourceColIndex === undefined || purchaseSourceUrlColIndex === undefined) {
-      Logger.log('仕入元マッピング列が見つかりません（「仕入元」「仕入元URL」列が必要です）');
+      Logger.log('仕入元マッピング列が見つかりません（「サイト名」「ドメイン」列が必要です）');
       return [];
     }
 
@@ -484,9 +533,9 @@ function getPurchaseSourceNameFromUrl(url) {
     }
   }
 
-  // 見つからない場合は従来の判定ロジックにフォールバック
-  Logger.log('マッピングに一致しないため、従来ロジックで判定: ' + url);
-  return getSiteNameFromImageUrl(url);
+  // 見つからない場合は getSiteName() にフォールバック
+  Logger.log('マッピングに一致しないため getSiteName() で判定: ' + url);
+  return getSiteName(url);
 }
 
 /**
