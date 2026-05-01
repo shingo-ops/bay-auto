@@ -69,6 +69,7 @@ function extractImageUrlsFromProductPage(productPageUrl) {
       return extractMercariShopsImageUrls(url);
     }
 
+
     // ツール設定シートの「画像取得」列で対応チェック
     if (!isImageSupportedForUrl(url)) {
       const siteName = getSiteName(url);
@@ -82,6 +83,7 @@ function extractImageUrlsFromProductPage(productPageUrl) {
       Logger.log('🏪 メルカリショップスURL検出');
       return extractMercariShopsImageUrls(url);
     }
+
 
     // メルカリ
     if (url.includes('mercari.com')) {
