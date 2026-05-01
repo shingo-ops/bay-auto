@@ -3898,3 +3898,147 @@ function _writeDivergenceResolvedUrlsToSheet(spreadsheetId, rowNumber, resolvedU
     CURRENT_SPREADSHEET_ID = null;
   }
 }
+
+// =============================================================================
+// PR #46 テスト: category_master × ConditionDescriptors 必須バリデーション
+// GAS エディタから直接実行 → ログ & TEST_LOG_PR46 シートに結果を書き出す
+// =============================================================================
+
+/**
+ * PR #46 全シナリオ動作確認
+ *
+ * シナリオ一覧:
+ *   1. 183454 | PSA   | 10  | 空                  → ✅ バリデーション通過（Graded）
+ *   2. 183454 | BGS   | 9.5 | 空                  → ✅ バリデーション通過（Graded）
+ *   3. 183454 | 空    | 空  | Near Mint or Better  → ✅ バリデーション通過（Ungraded）
+ *   4. 183454 | 空    | 空  | 空                  → ❌ バリデーション警告（PR #46 新規）
+ *   5. 183454 | PSA   | 10  | Near Mint or Better  → ✅ バリデーション通過（Grader優先）
+ *   6. 261328 | PSA   | 10  | 空                  → ✅ バリデーション通過（別トレカカテゴリ）
+ *   7. 176984 | PSA   | 10  | 空                  → ✅ バリデーション通過（非トレカカテゴリ）
+ */
+function testPR46AllScenarios() {
+  // 全シナリオ共通のベースデータ（必須フィールドを網羅）
+  var base = {
+    wordCheck:        '',
+    sku:              '',
+    title:            'Test Card PR46',
+    categoryId:       '183454',
+    quantity:         1,
+    price:            9999.99,
+    shippingPolicy:   'TEST_SHIPPING',
+    returnPolicy:     'TEST_RETURN',
+    paymentPolicy:    'TEST_PAYMENT',
+    description:      'Test description',
+    grader:           '',
+    gradeValue:       '',
+    cardCondition:    '',
+    brand:            '',
+    bestOfferEnabled: false
+  };
+
+  var scenarios = [
+    {
+      num:         1,
+      desc:        '183454 | PSA | 10 | 空 → ✅ Graded (2750)',
+      override:    { sku: 'TEST-PR46-CASE1', grader: 'PSA', gradeValue: '10' },
+      expectBlock: false
+    },
+    {
+      num:         2,
+      desc:        '183454 | BGS | 9.5 | 空 → ✅ Graded (2750)',
+      override:    { sku: 'TEST-PR46-CASE2', grader: 'BGS', gradeValue: '9.5' },
+      expectBlock: false
+    },
+    {
+      num:         3,
+      desc:        '183454 | 空 | 空 | Near Mint or Better → ✅ Ungraded (4000)',
+      override:    { sku: 'TEST-PR46-CASE3', cardCondition: 'Near Mint or Better' },
+      expectBlock: false
+    },
+    {
+      num:         4,
+      desc:        '183454 | 空 | 空 | 空 → ❌ バリデーション警告（PR #46 新規）',
+      override:    { sku: 'TEST-PR46-CASE4' },
+      expectBlock: true
+    },
+    {
+      num:         5,
+      desc:        '183454 | PSA | 10 | Near Mint or Better → ✅ Grader優先',
+      override:    { sku: 'TEST-PR46-CASE5', grader: 'PSA', gradeValue: '10', cardCondition: 'Near Mint or Better' },
+      expectBlock: false
+    },
+    {
+      num:         6,
+      desc:        '261328 | PSA | 10 | 空 → ✅ 別トレカカテゴリ',
+      override:    { sku: 'TEST-PR46-CASE6', categoryId: '261328', grader: 'PSA', gradeValue: '10' },
+      expectBlock: false
+    },
+    {
+      num:         7,
+      desc:        '176984 | PSA | 10 | 空 → ✅ 非トレカカテゴリ（無視）',
+      override:    { sku: 'TEST-PR46-CASE7', categoryId: '176984', grader: 'PSA', gradeValue: '10' },
+      expectBlock: false
+    }
+  ];
+
+  var lines  = [];
+  var passed = 0;
+  var failed = 0;
+
+  scenarios.forEach(function(sc) {
+    var testData = {};
+    var k;
+    for (k in base)        testData[k] = base[k];
+    for (k in sc.override) testData[k] = sc.override[k];
+
+    try {
+      var errors = validateListingData(testData);
+
+      // PR #46 関連エラーのみ抽出（その他の必須バリデーションエラーは除外）
+      var tradeCardErrors = errors.filter(function(e) {
+        return e.indexOf('トレカカテゴリ') !== -1;
+      });
+
+      var blocked = tradeCardErrors.length > 0;
+      var pass    = (blocked === sc.expectBlock);
+
+      if (pass) {
+        passed++;
+        lines.push('✅ PASS SC' + sc.num + ': ' + sc.desc);
+      } else {
+        failed++;
+        var detail = blocked ? tradeCardErrors[0] : '（トレカエラーなし）';
+        lines.push('❌ FAIL SC' + sc.num + ': ' + sc.desc + '\n     実際: ' + detail);
+      }
+    } catch (e) {
+      failed++;
+      lines.push('❌ ERROR SC' + sc.num + ': ' + sc.desc + '\n     例外: ' + e.toString());
+    }
+  });
+
+  var total   = passed + failed;
+  var summary = [
+    '=== PR #46 テストシナリオ結果 ===',
+    lines.join('\n'),
+    '',
+    '合計: ' + total + '件 | ✅ ' + passed + ' 合格 | ❌ ' + failed + ' 不合格'
+  ].join('\n');
+
+  Logger.log(summary);
+
+  // ログシートへの書き出し（確認用）
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var logSheet = ss.getSheetByName('TEST_LOG_PR46');
+    if (!logSheet) {
+      logSheet = ss.insertSheet('TEST_LOG_PR46');
+    }
+    logSheet.clearContents();
+    logSheet.getRange('A1').setValue(summary);
+    logSheet.autoResizeColumn(1);
+  } catch (writeErr) {
+    Logger.log('ログシート書き出し失敗（テスト結果は上記ログを確認）: ' + writeErr.toString());
+  }
+
+  return summary;
+}
