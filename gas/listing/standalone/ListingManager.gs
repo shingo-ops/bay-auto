@@ -1480,13 +1480,30 @@ function escapeXml(str) {
     .replace(/'/g, '&apos;');
 }
 
-// ── グレーダー名 → eBay ConditionDescriptor Value ID ─────────────────────────
-// 275010=PSA, 275013=BGS/Beckett, 275016=SGC, 2750123=Other
+// ── グレーダー名 → eBay ConditionDescriptor Value ID (Name 27501) ─────────────
+// 出典: https://developer.ebay.com/api-docs/user-guides/static/mip-user-guide/mip-enum-condition-descriptor-ids-for-trading-cards.html
+// 不明なグレーダーは Other (2750123) にフォールバック
+// CGC は eBay のリストに含まれていないため Other に落ちる
 var _GRADER_VALUE_MAP_ = {
   'PSA':     '275010',
+  'BCCG':    '275011',
+  'BVG':     '275012',
   'BGS':     '275013',
   'BECKETT': '275013',
-  'SGC':     '275016'
+  'CSG':     '275014',
+  'SGC':     '275016',
+  'KSA':     '275017',
+  'GMA':     '275018',
+  'HGA':     '275019',
+  'ISA':     '2750110',
+  'GSG':     '2750112',
+  'PGS':     '2750113',
+  'MNT':     '2750114',
+  'TAG':     '2750115',
+  'RARE':    '2750116',
+  'RCG':     '2750117',
+  'CGA':     '2750120',
+  'TCG':     '2750121'
 };
 
 /**
