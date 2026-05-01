@@ -3212,6 +3212,34 @@ function testTransferToOutputDb() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * conditions_json から descriptor_type を計算するヘルパー（PR #46 fallback）
+ *
+ * descriptor_type 列が category_master シートに存在しない（ImportSync 未実行）場合に
+ * conditions_json の condition ID セットから graded_card 判定を行う。
+ *
+ * 判定ルール（generate_csv.py の get_descriptor_type と同一）:
+ *   conditions_json に 2750 と 4000 の両方を含み、
+ *   かつ 5000 / 6000 / 7000 / 2500 を含まない → "graded_card"
+ *   それ以外 → "none"
+ *
+ * @param {string} conditionsJson conditions_json 列の値（JSON 配列文字列）
+ * @returns {string} "graded_card" | "none"
+ */
+function _computeDescriptorTypeFromConditions_(conditionsJson) {
+  try {
+    var conds = JSON.parse(conditionsJson || '[]');
+    var ids   = conds.map(function(c) { return String(c.id); });
+    var REQUIRED = ['2750', '4000'];
+    var EXCLUDE  = ['5000', '6000', '7000', '2500'];
+    var hasAll     = REQUIRED.every(function(id) { return ids.indexOf(id) !== -1; });
+    var hasExclude = EXCLUDE.some(function(id)   { return ids.indexOf(id) !== -1; });
+    return (hasAll && !hasExclude) ? 'graded_card' : 'none';
+  } catch (e) {
+    return 'none';
+  }
+}
+
+/**
  * カテゴリマスタから 1 カテゴリ分のデータを取得
  * category_master_EBAY_US シートをヘッダーベースで読み込む
  *
@@ -3250,7 +3278,8 @@ function getCategoryMasterDataForListing(spreadsheetId, categoryId) {
       opt:      headers.indexOf('optional_specs_json'),
       aspVal:   headers.indexOf('aspect_values_json'),
       group:    headers.indexOf('condition_group'),
-      descType: headers.indexOf('descriptor_type')  // PR #46
+      descType: headers.indexOf('descriptor_type'),  // PR #46（列がない場合は conditions_json から計算）
+      conds:    headers.indexOf('conditions_json')   // PR #46 fallback 用
     };
 
     if (idx.catId === -1) {
@@ -3263,6 +3292,14 @@ function getCategoryMasterDataForListing(spreadsheetId, categoryId) {
 
     for (let i = 1; i < data.length; i++) {
       if (String(data[i][idx.catId]) === String(categoryId)) {
+        // descriptor_type 列がない場合は conditions_json から動的計算（ImportSync 前でも動作）
+        let descriptorType = 'none';
+        if (idx.descType !== -1) {
+          descriptorType = String(data[i][idx.descType] || 'none');
+        } else if (idx.conds !== -1) {
+          descriptorType = _computeDescriptorTypeFromConditions_(data[i][idx.conds]);
+          Logger.log('[getCategoryMasterDataForListing] descriptor_type 列なし → conditions_json から計算: ' + descriptorType);
+        }
         return {
           categoryId:       String(data[i][idx.catId]),
           categoryName:     idx.catName  !== -1 ? String(data[i][idx.catName]  || '') : '',
@@ -3271,7 +3308,7 @@ function getCategoryMasterDataForListing(spreadsheetId, categoryId) {
           optionalSpecs:    idx.opt      !== -1 ? parseArr(data[i][idx.opt])         : [],
           aspectValues:     idx.aspVal   !== -1 ? parseObj(data[i][idx.aspVal])      : {},
           conditionGroup:   idx.group    !== -1 ? String(data[i][idx.group]    || '') : '',
-          descriptorType:   idx.descType !== -1 ? String(data[i][idx.descType] || 'none') : 'none'  // PR #46
+          descriptorType:   descriptorType
         };
       }
     }
@@ -4027,8 +4064,9 @@ function testPR46AllScenarios() {
   Logger.log(summary);
 
   // ログシートへの書き出し（確認用）
+  // standalone スクリプトでは getActiveSpreadsheet() が null を返すため getTargetSpreadsheet() を使用
   try {
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var ss = getTargetSpreadsheet();
     var logSheet = ss.getSheetByName('TEST_LOG_PR46');
     if (!logSheet) {
       logSheet = ss.insertSheet('TEST_LOG_PR46');
