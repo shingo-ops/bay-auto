@@ -61,11 +61,26 @@ function extractImageUrlsFromProductPage(productPageUrl) {
     const url = productPageUrl.toString();
     Logger.log('商品ページURL: ' + url);
 
+    // メルカリショップス（旧ドメイン）: Gate 1 より前に処理
+    // mercari-shops.com は jp.mercari.com/shops/product/ へ 308 リダイレクト済みのため
+    // ツール設定シートのサイトマスタ（jp.mercari.com）に依存せず直接処理する
+    if (url.includes('mercari-shops.com')) {
+      Logger.log('🏪 メルカリショップス（旧ドメイン）URL検出');
+      return extractMercariShopsImageUrls(url);
+    }
+
     // ツール設定シートの「画像取得」列で対応チェック
     if (!isImageSupportedForUrl(url)) {
       const siteName = getSiteName(url);
       Logger.log('⚠️ ' + siteName + ' は画像取得非対応（ツール設定シートで「対応」設定なし）');
       return [];
+    }
+
+    // メルカリショップス（新ドメイン: jp.mercari.com/shops/product/）
+    // 通常の /item/ 形式と異なる画像取得が必要なため先に分岐
+    if (url.includes('jp.mercari.com') && url.includes('/shops/product/')) {
+      Logger.log('🏪 メルカリショップスURL検出');
+      return extractMercariShopsImageUrls(url);
     }
 
     // メルカリ
@@ -221,6 +236,61 @@ function extractMercariImageUrls(productPageUrl) {
 
   } catch (error) {
     Logger.log('extractMercariImageUrlsエラー: ' + error.toString());
+    return [];
+  }
+}
+
+/**
+ * メルカリショップス商品ページから画像URLを抽出
+ *
+ * 取得方法: og:image メタタグからメイン画像を1枚取得
+ * 制限: 追加画像は認証が必要な内部API（api.mercari.jp）で提供されるため取得不可
+ * 対応URL:
+ *   - https://jp.mercari.com/shops/product/{productId}
+ *   - https://mercari-shops.com/products/{productId}（308リダイレクト → 上記へ）
+ *
+ * @param {string} productPageUrl メルカリショップス商品URL
+ * @returns {Array<string>} 画像URLの配列（最大1件）
+ */
+function extractMercariShopsImageUrls(productPageUrl) {
+  try {
+    var response = fetchWithRetry(productPageUrl, {
+      muteHttpExceptions: true,
+      followRedirects: true,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'ja,en;q=0.9'
+      }
+    });
+
+    var code = response.getResponseCode();
+    if (code !== 200) {
+      Logger.log('⚠️ メルカリショップス: HTTPエラー ' + code);
+      return [];
+    }
+
+    var html = response.getContentText('UTF-8');
+
+    // og:image メタタグからメイン画像URLを取得
+    // 属性順 property→content と content→property の両方に対応
+    var ogMatch = html.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/);
+    if (!ogMatch) {
+      ogMatch = html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:image"/);
+    }
+
+    if (!ogMatch) {
+      Logger.log('⚠️ メルカリショップス: og:image が見つかりませんでした（URL: ' + productPageUrl + '）');
+      return [];
+    }
+
+    var imageUrl = ogMatch[1];
+    Logger.log('✅ メルカリショップス: 主画像取得 ' + imageUrl);
+    Logger.log('ℹ️ メルカリショップス: 追加画像は認証必須APIのため取得不可（1枚のみ）');
+    return [imageUrl];
+
+  } catch (e) {
+    Logger.log('extractMercariShopsImageUrlsエラー: ' + e.toString());
     return [];
   }
 }
