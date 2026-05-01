@@ -2,19 +2,19 @@
 
 **調査日**: 2026-05-02  
 **対象カテゴリ**: 183454 (CCG Individual Cards)  
-**ステータス**: ドキュメント調査完了 / API実テスト手順付き
+**ステータス**: APIテスト完了・main マージ済み (2026-05-02)
 
 ---
 
-## 結論
+## 結論 【最終版 – APIテスト後に修正】
 
 | 項目 | 結果 |
 |------|------|
-| ConditionID 2750 + ConditionDescriptors で出品可能か | **YES（公式仕様として確定）** |
-| 実装 (PR #45) で進めるべきか | **YES（ただし Grader マップ拡充が必要）** |
-| Grade の値形式 | **フリーテキスト文字列** ("10", "9.5") — 数値ID不要 |
+| ConditionID 2750 + ConditionDescriptors で出品可能か | **YES（APIテストで確認）** |
+| ConditionID 4000 で ConditionDescriptors は必要か | **YES（Name=40001 必須、ドキュメント調査当初は「不要」と誤記）** |
+| Grade の値形式 | **数値ID** (275020=Grade10, 275021=Grade9.5, ..., 275029=Grade5.5) — フリーテキスト不可 ⚠️当初誤記 |
 | Grader の値形式 | **数値ID** (PSA=275010, BGS=275013, ...) |
-| ConditionID 4000 で ConditionDescriptors は必要か | **NO（任意。今回の実装対象外）** |
+| Grade対応範囲 | 5.5〜10 (0.5刻み, 計10値) eBay APIが受け付ける上位グレードのみ |
 
 ---
 
