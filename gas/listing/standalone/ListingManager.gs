@@ -413,10 +413,6 @@ function readListingDataFromSheet(spreadsheetId, rowNumber) {
     title: getValueByHeader(rowData, headerMapping, 'タイトル'),
     condition: getValueByHeader(rowData, headerMapping, '状態'),
     conditionDescription: getValueByHeader(rowData, headerMapping, '状態説明'),
-    grader:        getValueByHeader(rowData, headerMapping, 'Grader'),
-    gradeValue:    getValueByHeader(rowData, headerMapping, 'Grade'),
-    certNo:        getValueByHeader(rowData, headerMapping, 'Cert No'),
-    cardCondition: getValueByHeader(rowData, headerMapping, 'Card Condition'),
     description: getValueByHeader(rowData, headerMapping, 'Description'),
     categoryId: getValueByHeader(rowData, headerMapping, 'カテゴリID'),
     brand: getValueByHeader(rowData, headerMapping, 'Brand'),
@@ -525,14 +521,16 @@ function validateListingData(data) {
     errors.push('SKUは50文字以内にしてください');
   }
 
-  // トレカ鑑定情報バリデーション (Grader/Grade は両方入力 or 両方空)
-  var hasGrader     = data.grader     && String(data.grader).trim()     !== '';
-  var hasGradeValue = data.gradeValue && String(data.gradeValue).trim() !== '';
+  // トレカ鑑定情報バリデーション (パターンW: ItemSpecifics から判定)
+  // Professional Grader / Grade は両方入力 or 両方空
+  var _valCdParams_ = _extractConditionParamsFromSpecifics_(data.itemSpecifics);
+  var hasGrader     = _valCdParams_.grader    !== '';
+  var hasGradeValue = _valCdParams_.grade      !== '';
   if (hasGrader && !hasGradeValue) {
-    errors.push('Graderが入力されていますがGradeが空です。両方入力してください');
+    errors.push('Professional Graderが入力されていますがGradeが空です。両方入力してください');
   }
   if (!hasGrader && hasGradeValue) {
-    errors.push('Gradeが入力されていますがGraderが空です。両方入力してください');
+    errors.push('Gradeが入力されていますがProfessional Graderが空です。両方入力してください');
   }
 
   // Best Offer バリデーション
@@ -552,18 +550,34 @@ function validateListingData(data) {
     }
   }
 
-  // Brand必須チェック（カテゴリ依存）
+  // カテゴリマスタ参照チェック（Brand必須 + ConditionDescriptors必須）
   // ※ validateListingDataにspreadsheetIdが渡っていない場合は
   //   CURRENT_SPREADSHEET_IDを使用
   try {
     var catData = getCategoryMasterDataForListing(CURRENT_SPREADSHEET_ID, String(data.categoryId));
+
+    // Brand必須チェック
     if (catData && catData.requiredSpecs && catData.requiredSpecs.indexOf('Brand') !== -1) {
       if (!data.brand || String(data.brand).trim() === '') {
         errors.push('Brand（ブランド）が未入力です → Brand列に入力してください');
       }
     }
-  } catch(brandCheckErr) {
-    Logger.log('Brand必須チェックエラー（続行）: ' + brandCheckErr.toString());
+
+    // ConditionDescriptors 必須チェック (パターンW: ItemSpecifics ベース)
+    // descriptor_type = "graded_card" のカテゴリでは
+    // Professional Grader+Grade（鑑定済み）または Card Condition（未鑑定）のいずれかが必須
+    if (catData && catData.descriptorType === 'graded_card') {
+      var hasCardCondition = _valCdParams_.cardCondition !== '';
+      if (!hasGrader && !hasGradeValue && !hasCardCondition) {
+        errors.push(
+          'トレカカテゴリ（カテゴリID: ' + String(data.categoryId) + '）の出品には以下のいずれかの入力が必要です:\n' +
+          '  ・鑑定済み: 項目名列に「Professional Grader」(PSA / BGS / SGC 等) + 「Grade」(10 / 9.5 / 9 等)\n' +
+          '  ・未鑑定: 項目名列に「Card Condition」(Near Mint or Better / Excellent / Very Good / Poor)'
+        );
+      }
+    }
+  } catch(catCheckErr) {
+    Logger.log('カテゴリマスタチェックエラー（続行）: ' + catCheckErr.toString());
   }
 
   return errors;
@@ -1119,10 +1133,9 @@ function reviseFixedPriceItem(spreadsheetId, rowNumber) {
     const listingData = readListingDataFromSheet(spreadsheetId, rowNumber);
     if (spreadsheetId) CURRENT_SPREADSHEET_ID = spreadsheetId; // 再セット（readListingDataFromSheet内でリセットされる可能性）
 
-    // ConditionID を解決（Grader+Grade 両方あれば Graded 2750 に自動確定）
-    const _rvGraderFilled_   = listingData.grader     && String(listingData.grader).trim()     !== '';
-    const _rvGradeValFilled_ = listingData.gradeValue && String(listingData.gradeValue).trim() !== '';
-    const conditionId = (_rvGraderFilled_ && _rvGradeValFilled_)
+    // ConditionID を解決（パターンW: ItemSpecifics から判定）
+    const _rvCdParams_ = _extractConditionParamsFromSpecifics_(listingData.itemSpecifics);
+    const conditionId = (_rvCdParams_.grader && _rvCdParams_.grade)
       ? '2750'
       : resolveConditionIdFromMaster(listingData.condition, config, listingData.categoryId);
 
@@ -1141,15 +1154,14 @@ function reviseFixedPriceItem(spreadsheetId, rowNumber) {
           '<Quantity>' + parseInt(listingData.quantity) + '</Quantity>' +
           '<ConditionID>' + conditionId + '</ConditionID>';
 
-    // ConditionDescriptors（Graded / Ungraded 共通）
-    if (conditionId === '2750' && _rvGraderFilled_ && _rvGradeValFilled_) {
-      try {
-        xmlBody += _buildConditionDescriptorsXml_(listingData.grader, listingData.gradeValue, listingData.certNo);
-      } catch (descErr) {
-        return { success: false, message: 'ConditionDescriptors の構築に失敗しました。\n' + descErr.toString() };
-      }
-    } else if (conditionId === '4000') {
-      xmlBody += _buildUngradedDescriptorsXml_(listingData.cardCondition);
+    // ConditionDescriptors（パターンW: ItemSpecifics 経由で組み立て）
+    try {
+      var _rvCatData_ = getCategoryMasterDataForListing(CURRENT_SPREADSHEET_ID, String(listingData.categoryId));
+      var _rvDescType_ = _rvCatData_ ? _rvCatData_.descriptorType : 'none';
+      var _rvCdXml_ = buildConditionDescriptorsFromSpecifics(listingData.itemSpecifics, _rvDescType_);
+      if (_rvCdXml_) xmlBody += _rvCdXml_;
+    } catch (descErr) {
+      return { success: false, message: 'ConditionDescriptors の構築に失敗しました。\n' + descErr.toString() };
     }
 
     // ConditionDescription
@@ -1543,6 +1555,61 @@ var _UNGRADED_CONDITION_MAP_ = {
 };
 
 /**
+ * ItemSpecifics 配列からグレーダー/グレード/カード品質を抽出するヘルパー (パターンW)
+ *
+ * 対応キー:
+ *   grader        → "Professional Grader" | "Grader"
+ *   grade         → "Grade"
+ *   cardCondition → "Card Condition"
+ *   certNo        → "Certification Number" | "Cert #" | "Cert No"
+ *
+ * @param {Array<{name:string, value:string}>} itemSpecifics extractItemSpecifics() の戻り値
+ * @returns {{grader:string, grade:string, cardCondition:string, certNo:string}}
+ */
+function _extractConditionParamsFromSpecifics_(itemSpecifics) {
+  var specs = {};
+  (itemSpecifics || []).forEach(function(s) {
+    if (s && s.name) specs[String(s.name).trim()] = String(s.value || '').trim();
+  });
+  return {
+    grader:        specs['Professional Grader'] || specs['Grader'] || '',
+    grade:         specs['Grade']               || '',
+    cardCondition: specs['Card Condition']       || '',
+    certNo:        specs['Certification Number'] || specs['Cert #'] || specs['Cert No'] || ''
+  };
+}
+
+/**
+ * ItemSpecifics の Name-Value ペアから ConditionDescriptors XML を生成する (パターンW)
+ *
+ * graded_card カテゴリのみ対象。他カテゴリは空文字を返す。
+ * - Professional Grader + Grade の両方あり → Graded (2750) ConditionDescriptors
+ * - Card Condition のみ                    → Ungraded (4000) ConditionDescriptors
+ * - 両方なし                               → '' (呼び出し元はバリデーション済みを前提)
+ *
+ * @param {Array<{name:string, value:string}>} itemSpecifics
+ * @param {string} descriptorType "graded_card" | "none"
+ * @returns {string} XML 文字列（空文字列 = 送信不要）
+ */
+function buildConditionDescriptorsFromSpecifics(itemSpecifics, descriptorType) {
+  if (descriptorType !== 'graded_card') return '';
+
+  var p = _extractConditionParamsFromSpecifics_(itemSpecifics);
+
+  if (p.grader && p.grade) {
+    // Graded: Grader + Grade 両方あり
+    return _buildConditionDescriptorsXml_(p.grader, p.grade, p.certNo);
+  }
+
+  if (p.cardCondition) {
+    // Ungraded: Card Condition のみ
+    return _buildUngradedDescriptorsXml_(p.cardCondition);
+  }
+
+  return ''; // バリデーションでブロック済みのはずだが念のため
+}
+
+/**
  * ConditionDescriptors XML ブロックを構築する (ConditionID 2750 専用)
  * @param {string} grader    グレーダー名 (例: 'PSA', 'BGS')
  * @param {string} gradeValue グレード値文字列 (例: '10', '9.5')
@@ -1607,13 +1674,12 @@ function addItemWithTradingApi(listingData, policyIds) {
   const config = getEbayConfig();
   const apiUrl = getTradingApiUrl();
 
-  // ConditionIDを事前解決（インライン呼び出しをやめてエラーを分かりやすくする）
-  const _graderFilled_   = listingData.grader     && String(listingData.grader).trim()     !== '';
-  const _gradeValFilled_ = listingData.gradeValue && String(listingData.gradeValue).trim() !== '';
+  // ConditionID を事前解決（パターンW: ItemSpecifics から判定）
+  // Professional Grader + Grade が ItemSpecifics にあれば Graded (2750) に自動確定
+  const _addCdParams_ = _extractConditionParamsFromSpecifics_(listingData.itemSpecifics);
   let conditionId;
-  if (_graderFilled_ && _gradeValFilled_) {
-    // Grader+Grade 両方入力済み → Graded (2750) に自動確定（状態列より優先）
-    conditionId = '2750';
+  if (_addCdParams_.grader && _addCdParams_.grade) {
+    conditionId = '2750'; // Graded: ItemSpecifics の Professional Grader + Grade 優先
   } else {
     try {
       conditionId = resolveConditionIdFromMaster(listingData.condition, config, listingData.categoryId);
@@ -1635,15 +1701,14 @@ function addItemWithTradingApi(listingData, policyIds) {
     '<StartPrice>' + listingData.price + '</StartPrice>' +
     '<ConditionID>' + conditionId + '</ConditionID>';
 
-  // ConditionDescriptors（Graded / Ungraded 共通）
-  if (conditionId === '2750' && _graderFilled_ && _gradeValFilled_) {
-    try {
-      xmlBody += _buildConditionDescriptorsXml_(listingData.grader, listingData.gradeValue, listingData.certNo);
-    } catch (descErr) {
-      return { success: false, message: 'ConditionDescriptors の構築に失敗しました。\n' + descErr.toString() };
-    }
-  } else if (conditionId === '4000') {
-    xmlBody += _buildUngradedDescriptorsXml_(listingData.cardCondition);
+  // ConditionDescriptors（パターンW: ItemSpecifics 経由で組み立て）
+  try {
+    var _addCatData_ = getCategoryMasterDataForListing(CURRENT_SPREADSHEET_ID, String(listingData.categoryId));
+    var _addDescType_ = _addCatData_ ? _addCatData_.descriptorType : 'none';
+    var _addCdXml_ = buildConditionDescriptorsFromSpecifics(listingData.itemSpecifics, _addDescType_);
+    if (_addCdXml_) xmlBody += _addCdXml_;
+  } catch (descErr) {
+    return { success: false, message: 'ConditionDescriptors の構築に失敗しました。\n' + descErr.toString() };
   }
 
   xmlBody +=
@@ -3196,6 +3261,34 @@ function testTransferToOutputDb() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * conditions_json から descriptor_type を計算するヘルパー（PR #46 fallback）
+ *
+ * descriptor_type 列が category_master シートに存在しない（ImportSync 未実行）場合に
+ * conditions_json の condition ID セットから graded_card 判定を行う。
+ *
+ * 判定ルール（generate_csv.py の get_descriptor_type と同一）:
+ *   conditions_json に 2750 と 4000 の両方を含み、
+ *   かつ 5000 / 6000 / 7000 / 2500 を含まない → "graded_card"
+ *   それ以外 → "none"
+ *
+ * @param {string} conditionsJson conditions_json 列の値（JSON 配列文字列）
+ * @returns {string} "graded_card" | "none"
+ */
+function _computeDescriptorTypeFromConditions_(conditionsJson) {
+  try {
+    var conds = JSON.parse(conditionsJson || '[]');
+    var ids   = conds.map(function(c) { return String(c.id); });
+    var REQUIRED = ['2750', '4000'];
+    var EXCLUDE  = ['5000', '6000', '7000', '2500'];
+    var hasAll     = REQUIRED.every(function(id) { return ids.indexOf(id) !== -1; });
+    var hasExclude = EXCLUDE.some(function(id)   { return ids.indexOf(id) !== -1; });
+    return (hasAll && !hasExclude) ? 'graded_card' : 'none';
+  } catch (e) {
+    return 'none';
+  }
+}
+
+/**
  * カテゴリマスタから 1 カテゴリ分のデータを取得
  * category_master_EBAY_US シートをヘッダーベースで読み込む
  *
@@ -3227,13 +3320,15 @@ function getCategoryMasterDataForListing(spreadsheetId, categoryId) {
     const headers = data[0];
 
     const idx = {
-      catId:   headers.indexOf('category_id'),
-      catName: headers.indexOf('category_name'),
-      req:     headers.indexOf('required_specs_json'),
-      rec:     headers.indexOf('recommended_specs_json'),
-      opt:     headers.indexOf('optional_specs_json'),
-      aspVal:  headers.indexOf('aspect_values_json'),
-      group:   headers.indexOf('condition_group')
+      catId:    headers.indexOf('category_id'),
+      catName:  headers.indexOf('category_name'),
+      req:      headers.indexOf('required_specs_json'),
+      rec:      headers.indexOf('recommended_specs_json'),
+      opt:      headers.indexOf('optional_specs_json'),
+      aspVal:   headers.indexOf('aspect_values_json'),
+      group:    headers.indexOf('condition_group'),
+      descType: headers.indexOf('descriptor_type'),  // PR #46（列がない場合は conditions_json から計算）
+      conds:    headers.indexOf('conditions_json')   // PR #46 fallback 用
     };
 
     if (idx.catId === -1) {
@@ -3246,14 +3341,23 @@ function getCategoryMasterDataForListing(spreadsheetId, categoryId) {
 
     for (let i = 1; i < data.length; i++) {
       if (String(data[i][idx.catId]) === String(categoryId)) {
+        // descriptor_type 列がない場合は conditions_json から動的計算（ImportSync 前でも動作）
+        let descriptorType = 'none';
+        if (idx.descType !== -1) {
+          descriptorType = String(data[i][idx.descType] || 'none');
+        } else if (idx.conds !== -1) {
+          descriptorType = _computeDescriptorTypeFromConditions_(data[i][idx.conds]);
+          Logger.log('[getCategoryMasterDataForListing] descriptor_type 列なし → conditions_json から計算: ' + descriptorType);
+        }
         return {
           categoryId:       String(data[i][idx.catId]),
-          categoryName:     idx.catName !== -1 ? String(data[i][idx.catName] || '') : '',
-          requiredSpecs:    idx.req    !== -1 ? parseArr(data[i][idx.req])    : [],
-          recommendedSpecs: idx.rec    !== -1 ? parseArr(data[i][idx.rec])    : [],
-          optionalSpecs:    idx.opt    !== -1 ? parseArr(data[i][idx.opt])    : [],
-          aspectValues:     idx.aspVal !== -1 ? parseObj(data[i][idx.aspVal]) : {},
-          conditionGroup:   idx.group  !== -1 ? String(data[i][idx.group] || '') : ''
+          categoryName:     idx.catName  !== -1 ? String(data[i][idx.catName]  || '') : '',
+          requiredSpecs:    idx.req      !== -1 ? parseArr(data[i][idx.req])         : [],
+          recommendedSpecs: idx.rec      !== -1 ? parseArr(data[i][idx.rec])         : [],
+          optionalSpecs:    idx.opt      !== -1 ? parseArr(data[i][idx.opt])         : [],
+          aspectValues:     idx.aspVal   !== -1 ? parseObj(data[i][idx.aspVal])      : {},
+          conditionGroup:   idx.group    !== -1 ? String(data[i][idx.group]    || '') : '',
+          descriptorType:   descriptorType
         };
       }
     }
@@ -3879,4 +3983,174 @@ function _writeDivergenceResolvedUrlsToSheet(spreadsheetId, rowNumber, resolvedU
   } finally {
     CURRENT_SPREADSHEET_ID = null;
   }
+}
+
+// =============================================================================
+// パターンW テスト: ItemSpecifics 経由 ConditionDescriptors バリデーション
+// GAS エディタから直接実行 → ログ & TEST_LOG_PR46 シートに結果を書き出す
+// =============================================================================
+
+/**
+ * パターンW 全シナリオ動作確認
+ *
+ * 入力は固定列ではなく ItemSpecifics (汎用スペック列) 経由。
+ *
+ * シナリオ一覧:
+ *   1. 183454 | Specs: Professional Grader=PSA, Grade=10               → ✅ 通過（Graded 2750）
+ *   2. 183454 | Specs: Professional Grader=BGS, Grade=9.5              → ✅ 通過（Graded 2750）
+ *   3. 183454 | Specs: Card Condition=Near Mint or Better              → ✅ 通過（Ungraded 4000）
+ *   4. 183454 | Specs: (全て空)                                        → ❌ バリデーション警告
+ *   5. 183454 | Specs: Professional Grader=PSA, Grade=10, Card Condition=NM → ✅ 通過（Grader優先）
+ *   6. 261328 | Specs: Professional Grader=PSA, Grade=10               → ✅ 通過（別トレカカテゴリ）
+ *   7. 176984 | Specs: Professional Grader=PSA, Grade=10               → ✅ 通過（非トレカカテゴリ、無視）
+ */
+function testPR46AllScenarios() {
+  // 全シナリオ共通のベースデータ（必須フィールドを網羅）
+  // パターンW: grader/gradeValue/cardCondition は itemSpecifics 経由で渡す
+  var base = {
+    wordCheck:        '',
+    sku:              '',
+    title:            'Test Card PatternW',
+    categoryId:       '183454',
+    quantity:         1,
+    price:            9999.99,
+    shippingPolicy:   'TEST_SHIPPING',
+    returnPolicy:     'TEST_RETURN',
+    paymentPolicy:    'TEST_PAYMENT',
+    description:      'Test description',
+    brand:            '',
+    bestOfferEnabled: false,
+    itemSpecifics:    []  // ItemSpecifics 経由で Grader/Grade/Card Condition を渡す
+  };
+
+  /**
+   * ItemSpecifics 配列を生成するヘルパー
+   * @param {Object} specs {name: value} のオブジェクト
+   */
+  function makeSpecs(specs) {
+    return Object.keys(specs).map(function(k) { return { name: k, value: specs[k] }; });
+  }
+
+  var scenarios = [
+    {
+      num:         1,
+      desc:        '183454 | Specs: Professional Grader=PSA, Grade=10 → ✅ Graded (2750)',
+      itemSpecs:   makeSpecs({ 'Professional Grader': 'PSA', 'Grade': '10' }),
+      skuOverride: 'TEST-PW-CASE1',
+      catOverride: null,
+      expectBlock: false
+    },
+    {
+      num:         2,
+      desc:        '183454 | Specs: Professional Grader=BGS, Grade=9.5 → ✅ Graded (2750)',
+      itemSpecs:   makeSpecs({ 'Professional Grader': 'BGS', 'Grade': '9.5' }),
+      skuOverride: 'TEST-PW-CASE2',
+      catOverride: null,
+      expectBlock: false
+    },
+    {
+      num:         3,
+      desc:        '183454 | Specs: Card Condition=Near Mint or Better → ✅ Ungraded (4000)',
+      itemSpecs:   makeSpecs({ 'Card Condition': 'Near Mint or Better' }),
+      skuOverride: 'TEST-PW-CASE3',
+      catOverride: null,
+      expectBlock: false
+    },
+    {
+      num:         4,
+      desc:        '183454 | Specs: (全て空) → ❌ バリデーション警告',
+      itemSpecs:   [],
+      skuOverride: 'TEST-PW-CASE4',
+      catOverride: null,
+      expectBlock: true
+    },
+    {
+      num:         5,
+      desc:        '183454 | Specs: Professional Grader=PSA, Grade=10, Card Condition=NM → ✅ Grader優先',
+      itemSpecs:   makeSpecs({ 'Professional Grader': 'PSA', 'Grade': '10', 'Card Condition': 'Near Mint or Better' }),
+      skuOverride: 'TEST-PW-CASE5',
+      catOverride: null,
+      expectBlock: false
+    },
+    {
+      num:         6,
+      desc:        '261328 | Specs: Professional Grader=PSA, Grade=10 → ✅ 別トレカカテゴリ',
+      itemSpecs:   makeSpecs({ 'Professional Grader': 'PSA', 'Grade': '10' }),
+      skuOverride: 'TEST-PW-CASE6',
+      catOverride: '261328',
+      expectBlock: false
+    },
+    {
+      num:         7,
+      desc:        '176984 | Specs: Professional Grader=PSA, Grade=10 → ✅ 非トレカカテゴリ（無視）',
+      itemSpecs:   makeSpecs({ 'Professional Grader': 'PSA', 'Grade': '10' }),
+      skuOverride: 'TEST-PW-CASE7',
+      catOverride: '176984',
+      expectBlock: false
+    }
+  ];
+
+  var lines  = [];
+  var passed = 0;
+  var failed = 0;
+
+  scenarios.forEach(function(sc) {
+    var testData = {};
+    var k;
+    for (k in base) testData[k] = base[k];
+    testData.sku          = sc.skuOverride;
+    testData.itemSpecifics = sc.itemSpecs;
+    if (sc.catOverride) testData.categoryId = sc.catOverride;
+
+    try {
+      var errors = validateListingData(testData);
+
+      // PR #46 関連エラーのみ抽出（その他の必須バリデーションエラーは除外）
+      var tradeCardErrors = errors.filter(function(e) {
+        return e.indexOf('トレカカテゴリ') !== -1;
+      });
+
+      var blocked = tradeCardErrors.length > 0;
+      var pass    = (blocked === sc.expectBlock);
+
+      if (pass) {
+        passed++;
+        lines.push('✅ PASS SC' + sc.num + ': ' + sc.desc);
+      } else {
+        failed++;
+        var detail = blocked ? tradeCardErrors[0] : '（トレカエラーなし）';
+        lines.push('❌ FAIL SC' + sc.num + ': ' + sc.desc + '\n     実際: ' + detail);
+      }
+    } catch (e) {
+      failed++;
+      lines.push('❌ ERROR SC' + sc.num + ': ' + sc.desc + '\n     例外: ' + e.toString());
+    }
+  });
+
+  var total   = passed + failed;
+  var summary = [
+    '=== パターンW テストシナリオ結果 ===',
+    lines.join('\n'),
+    '',
+    '合計: ' + total + '件 | ✅ ' + passed + ' 合格 | ❌ ' + failed + ' 不合格'
+  ].join('\n');
+
+  Logger.log(summary);
+
+  // ログシートへの書き出し（確認用）
+  // standalone スクリプトでは getActiveSpreadsheet() が null を返すため getTargetSpreadsheet() を使用
+  try {
+    var ss = getTargetSpreadsheet();
+    var logSheet = ss.getSheetByName('TEST_LOG_PR46');
+    if (!logSheet) {
+      logSheet = ss.insertSheet('TEST_LOG_PR46');
+    }
+    logSheet.clearContents();
+    logSheet.getRange('A1').setValue(summary);
+    logSheet.autoResizeColumn(1);
+  } catch (writeErr) {
+    Logger.log('ログシート書き出し失敗（テスト結果は上記ログを確認）: ' + writeErr.toString());
+  }
+
+  return summary;
 }
